@@ -1,7 +1,7 @@
-"""Checks the live presenter prompt in eager vs on-demand vision modes."""
+"""Checks the live presenter prompt and kickoff cues."""
 
 from app.domain.models import Deck, Slide
-from app.services.prompts import build_system_prompt
+from app.services.prompts import build_kickoff_cue, build_system_prompt
 
 
 def _deck() -> Deck:
@@ -39,7 +39,35 @@ def test_eager_prompt_preserves_current_slide_image_wording():
     print("ok: eager prompt preserves current-slide image wording")
 
 
+def test_kickoff_cue_only_delivers_opening():
+    cue = build_kickoff_cue()
+    assert "opening only" in cue
+    assert "Do not present slide 1 yet" in cue
+    print("ok: kickoff cue keeps slide 1 for the interruptible flow")
+
+
+def test_prompt_uses_generated_persona_when_no_override():
+    deck = _deck()
+    deck.persona = "An experienced operator who explains tradeoffs clearly and stays grounded."
+    prompt = build_system_prompt(deck)
+    assert "WHO YOU ARE: An experienced operator who explains tradeoffs clearly and stays grounded." in prompt
+    print("ok: generated persona is used by default")
+
+
+def test_prompt_prefers_user_persona_override():
+    deck = _deck()
+    deck.persona = "A polished consultant with boardroom language."
+    deck.persona_override = "A friendly founder with high energy, simple language, and a conversational pace."
+    prompt = build_system_prompt(deck)
+    assert "WHO YOU ARE: A friendly founder with high energy, simple language, and a conversational pace." in prompt
+    assert "WHO YOU ARE: A polished consultant with boardroom language." not in prompt
+    print("ok: user persona override wins")
+
+
 if __name__ == "__main__":
     test_on_demand_prompt_mentions_look_at_slide()
     test_eager_prompt_preserves_current_slide_image_wording()
+    test_kickoff_cue_only_delivers_opening()
+    test_prompt_uses_generated_persona_when_no_override()
+    test_prompt_prefers_user_persona_override()
     print("\nAll prompt tests passed.")

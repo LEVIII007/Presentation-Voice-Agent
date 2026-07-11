@@ -5,9 +5,9 @@ import { h, mount } from "../dom.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SERIES = [
-  { key: "stt", label: "Deepgram STT", color: "#5fd28d" },
-  { key: "llm", label: "Azure LLM", color: "#4da6ff" },
-  { key: "tts", label: "Cartesia TTS", color: "#f2b55f" },
+  { key: "stt", label: "STT", color: "#5fd28d" },
+  { key: "llm", label: "LLM", color: "#4da6ff" },
+  { key: "tts", label: "TTS", color: "#f2b55f" },
 ];
 
 function svg(tag, attrs = {}) {
@@ -179,7 +179,8 @@ function createChart(session) {
         class: "latency-point",
       });
       const title = svg("title");
-      title.textContent = `${series.label}\n${fmtMs(point.ttfb_ms)} at +${point.offset_s.toFixed(1)}s\n${point.processor}`;
+      const modelLine = point.model ? `\n${point.model}` : "";
+      title.textContent = `${series.label}\n${fmtMs(point.ttfb_ms)} at +${point.offset_s.toFixed(1)}s\n${point.processor}${modelLine}`;
       dot.append(title);
       root.append(dot);
     }
@@ -262,7 +263,7 @@ export async function renderLatency() {
         "div",
         {},
         h("h2", {}, "Latency by session"),
-        h("div", { class: "sub" }, "TTFB samples for Deepgram STT, Azure LLM, and Cartesia TTS."),
+        h("div", { class: "sub" }, "TTFB samples grouped by role: STT, LLM, and TTS."),
       ),
       refresh,
     ),

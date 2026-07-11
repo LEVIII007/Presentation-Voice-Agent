@@ -11,6 +11,13 @@ from __future__ import annotations
 from ..domain.models import Deck
 
 
+def _active_persona(deck: Deck) -> str:
+    override = (deck.persona_override or "").strip()
+    if override:
+        return override
+    return (deck.persona or "").strip()
+
+
 def build_system_prompt(deck: Deck, *, always_show_slide_image: bool = False) -> str:
     deck_lines = []
     for s in deck.slides:
@@ -43,12 +50,13 @@ def build_system_prompt(deck: Deck, *, always_show_slide_image: bool = False) ->
         )
     )
 
+    persona = _active_persona(deck)
     persona_block = (
-        f"WHO YOU ARE: {deck.persona}\n"
+        f"WHO YOU ARE: {persona}\n"
         "Stay in this character throughout — let it shape your word choice, warmth, and "
         "pacing — but never announce the role or overact it. You are simply the person who "
         "would naturally give this talk.\n\n"
-        if deck.persona
+        if persona
         else ""
     )
 
@@ -102,7 +110,9 @@ WHEN THE AUDIENCE ASKS SOMETHING (this is your most important skill):
 - If that slide is NOT the one on screen, you MUST call go_to_slide for it FIRST, then
   answer from it. Do this on your own — the audience does NOT have to ask you to switch.
   Never answer a question about another slide's topic while the wrong slide is showing:
-  the audience should always be looking at the slide you're talking about.
+  the audience should always be looking at the slide you're talking about. Pass reason
+  "answer_question" for these jumps — they are detours, and the talk returns to its own
+  flow afterwards.
 - Only answer without navigating when the question is about the slide already on screen,
   or is a short follow-up to what you just said.
 - Move with a brief, natural transition ("Sure, let's look at that.") — never announce
@@ -122,7 +132,16 @@ WHEN THE AUDIENCE ASKS SOMETHING (this is your most important skill):
   confirm in a few words, and wait. While paused, just answer questions.
 - If they ask to resume or continue: call set_presentation_flow with "resume" and say a
   short line like "Picking up where we left off." The system will cue the next slide.
-- If they ask to skip ahead or go back, call go_to_slide for the slide they want.
+- If they ask to skip ahead or go back, call go_to_slide for the slide they want, with
+  reason "navigation" — the talk then continues forward from that slide, not from where
+  it was before the jump.
+
+IF YOU GET INTERRUPTED (the audience can cut you off mid-sentence):
+- Deliver your opening greeting exactly ONCE per session. If it was cut off, never start
+  it over — handle what they said and move on with the talk.
+- Never re-present from the top a slide you were partway through. When the system cues
+  you to finish an interrupted slide, or the audience asks you to continue, pick up from
+  where you were cut off and skip everything they already heard.
 
 VOICE RULES:
 - Plain spoken sentences only. NEVER use markdown, asterisks, bullet symbols, emojis, or
@@ -140,7 +159,8 @@ back to the presentation, rather than guessing at length."""
 def build_kickoff_cue() -> str:
     return (
         "(System cue: the audience has just connected and slide 1 is on screen. Greet "
-        "them with your opening, then present slide 1. Do not call any tools. Then stop.)"
+        "them with your opening only. Do not present slide 1 yet. Do not call any tools. "
+        "Then stop.)"
     )
 
 
@@ -148,16 +168,26 @@ def build_advance_cue(slide_number: int, already_covered: bool = False) -> str:
     if already_covered:
         return (
             f"(System cue: the talk now reaches slide {slide_number}, but you ALREADY went "
-            f"over this slide earlier when answering a question. Call go_to_slide with "
+            f"over this slide earlier. Call go_to_slide with "
             f"{slide_number} first to bring it back up, then do NOT re-present it from "
             f"scratch. Acknowledge that you looked at it together earlier (like 'As we saw a "
-            f"moment ago when you asked about this...'), then add whatever you did not cover "
+            f"moment ago...'), then add whatever you did not cover "
             f"the first time — a detail, an implication, or how it connects to the next part. "
             f"If it was already fully covered, give a one-line bridge and move on. Then stop.)"
         )
     return (
         f"(System cue: present slide {slide_number} now. Call go_to_slide with "
         f"{slide_number} first, then present it, then stop.)"
+    )
+
+
+def build_finish_cue(slide_number: int, remainder: str) -> str:
+    return (
+        f"(System cue: you were interrupted while presenting slide {slide_number}, and the "
+        f"audience never heard the rest of it. If slide {slide_number} is no longer on "
+        f"screen, call go_to_slide with {slide_number} first. Then pick up smoothly where "
+        f"you were cut off — do NOT restart the slide or repeat what they already heard. "
+        f'What they missed: "{remainder}". Deliver that content naturally, then stop.)'
     )
 
 

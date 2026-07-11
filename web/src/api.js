@@ -32,13 +32,14 @@ export const api = {
   listDecks: () => request("GET", "/api/decks"),
   getDeck: (id) => request("GET", `/api/decks/${id}`),
   status: (id) => request("GET", `/api/decks/${id}/status`),
+  patchDeck: (id, data) => request("PATCH", `/api/decks/${id}`, data),
   patchSlide: (id, n, data) => request("PATCH", `/api/decks/${id}/slides/${n}`, data),
   retryDeck: (id) => request("POST", `/api/decks/${id}/retry`),
   deleteDeck: (id) => request("DELETE", `/api/decks/${id}`),
   imageUrl: (id, n) => `${BACKEND_URL}/api/decks/${id}/slides/${n}/image`,
 
   // XHR instead of fetch: byte-level upload progress.
-  upload: (file, onProgress) =>
+  upload: (file, { personaOverride = "", onProgress } = {}) =>
     new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${BACKEND_URL}/api/decks`);
@@ -59,6 +60,7 @@ export const api = {
       xhr.onerror = () => reject(new Error("Network error during upload"));
       const form = new FormData();
       form.append("file", file);
+      if (personaOverride) form.append("persona_override", personaOverride);
       xhr.send(form);
     }),
 };

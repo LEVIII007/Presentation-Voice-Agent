@@ -46,7 +46,8 @@ class Deck:
     slide_count: int = 0
     intro: str = ""  # spoken welcome + agenda, generated after narration
     outro: str = ""  # spoken closing summary
-    persona: str = ""  # who the presenter speaks as + tone, inferred from the deck's domain
+    persona: str = ""  # suggested presenter role + tone inferred from the deck
+    persona_override: str = ""  # optional user-written presenter direction
     created_at: Optional[datetime] = None
     slides: list[Slide] = field(default_factory=list)
 
@@ -66,4 +67,15 @@ class DeckSynthesis:
     intro: str
     outro: str
     transitions: dict[int, str]  # slide number -> spoken bridge into that slide
-    persona: str = ""  # role + tone direction for the live presenter, not spoken aloud
+    persona: str = ""  # suggested role + tone direction for the live presenter
+
+
+@dataclass
+class QAExtraction:
+    """A cleaned audience Q&A exchange for the viewer's question log: a concise
+    one-line question and a self-contained answer. The QAExtractor returns None
+    instead when the raw utterance was not a genuine question (a greeting,
+    acknowledgment, navigation/flow command, or speech-to-text garble)."""
+
+    question: str
+    answer: str

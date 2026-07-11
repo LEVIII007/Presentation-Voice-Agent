@@ -79,6 +79,11 @@ export async function renderDashboard() {
   const progressBar = h("div", { class: "bar" }, h("span", { style: "width:0%" }));
   const progressLabel = h("div", { class: "stage-label" }, "");
   progressWrap.append(progressLabel, progressBar);
+  const personaInput = h("textarea", {
+    rows: "3",
+    id: "persona-input",
+    placeholder: "Example: Present like a warm founder who explains clearly and keeps the pace lively.",
+  });
 
   async function handleFile(file) {
     const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
@@ -88,9 +93,13 @@ export async function renderDashboard() {
     progressWrap.style.display = "block";
     progressLabel.textContent = `Uploading ${file.name}…`;
     try {
-      const deck = await api.upload(file, (frac) => {
-        progressBar.firstChild.style.width = `${Math.round(frac * 100)}%`;
+      const deck = await api.upload(file, {
+        personaOverride: personaInput.value.trim(),
+        onProgress: (frac) => {
+          progressBar.firstChild.style.width = `${Math.round(frac * 100)}%`;
+        },
       });
+      personaInput.value = "";
       toast("Uploaded — starting ingestion", "success");
       navigate(`#/deck/${deck.id}/processing`);
     } catch (e) {
@@ -100,7 +109,18 @@ export async function renderDashboard() {
   }
 
   const zone = uploadZone(handleFile);
-  page.append(zone, progressWrap);
+  const personaCard = h(
+    "div",
+    { class: "upload-option-card" },
+    h("label", { class: "form-label", for: "persona-input" }, "Presenter persona (optional)"),
+    h(
+      "div",
+      { class: "field-note" },
+      "Tell the presenter how to act while giving the talk. Leave this blank and we will choose a fitting persona from the deck.",
+    ),
+    personaInput,
+  );
+  page.append(zone, personaCard, progressWrap);
 
   const listWrap = h("div", { style: "margin-top:28px" }, h("div", { class: "spinner" }));
   page.append(listWrap);

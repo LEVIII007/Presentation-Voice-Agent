@@ -16,9 +16,11 @@ from ..adapters.pipecat_services import (
     CartesiaTTSFactory,
     DeepgramSTTFactory,
 )
+from ..adapters.qa_log import AzureQAExtractor
 from ..adapters.renderer import PyMuPDFRenderer
 from ..adapters.repos import SqlDeckRepo, SqlSessionLog
 from ..services.ingestion import IngestionService
+from ..services.tts_diagnostics import describe_tts_connection_error
 from ..services.worker import IngestionWorker
 from ..voice.manager import ConnectionManager
 from ..voice.session import VoiceSessionRunner
@@ -63,20 +65,38 @@ async def build_container(settings: Settings) -> Container:
         enabled=settings.latency_log,
         file_path=settings.data_dir / settings.latency_log_file,
     )
+    if settings.tts_provider == "azure":
+        # Lazy import: only load the Azure speech SDK when actually selected.
+        from ..adapters.azure_tts import AzureTTSFactory
+
+        tts = AzureTTSFactory(
+            api_key=settings.azure_speech_key,
+            region=settings.azure_speech_region,
+            voice=settings.azure_speech_voice,
+        )
+    else:
+        tts = CartesiaTTSFactory(settings.cartesia_api_key, settings.cartesia_voice_id)
     session_runner = VoiceSessionRunner(
         stt=DeepgramSTTFactory(settings.deepgram_api_key),
-        tts=CartesiaTTSFactory(settings.cartesia_api_key, settings.cartesia_voice_id),
+        tts=tts,
         llm=AzureLLMFactory(
             api_key=settings.azure_openai_api_key,
             endpoint=settings.azure_openai_endpoint,
             deployment=settings.azure_openai_chat_deployment,
             api_version=settings.azure_openai_api_version,
         ),
+        qa_extractor=AzureQAExtractor(
+            api_key=settings.azure_openai_api_key,
+            endpoint=settings.azure_openai_endpoint,
+            api_version=settings.azure_openai_api_version,
+            deployment=settings.azure_openai_chat_deployment,
+        ),
         repo=repo,
         sessions=sessions,
         manager=manager,
         latency=latency,
         always_show_slide_image=settings.voice_always_show_slide_image,
+        tts_error_explainer=lambda error: describe_tts_connection_error(settings, error),
     )
 
     return Container(

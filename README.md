@@ -27,7 +27,7 @@ presentable with zero uploads.
 | **Progress** | Live thumbnail grid that fills in per slide; **refresh-proof** (server owns all state). Handles failed + retry. |
 | **Review** | Creator edits each slide's title + AI narration side-by-side with its image; autosave; low-confidence flags. |
 | **Viewer** | Image carousel (no PDF.js), slide rail + manual nav, live captions, starter chips, typed-question fallback, thinking indicator, mic priming, end-screen CTA. Mobile-friendly. |
-| **Voice** | Cascaded Deepgram STT → gpt-5-mini (+ `go_to_slide` tool) → Cartesia TTS, Silero VAD barge-in. |
+| **Voice** | Cascaded Deepgram STT → gpt-5-mini (+ `go_to_slide` tool) → Cartesia or Azure Speech TTS, Silero VAD barge-in. |
 
 ## Architecture
 
@@ -83,7 +83,7 @@ event loop — rasterization and vision live in the worker (`asyncio.to_thread`)
 ## Setup
 
 Needs **Deepgram** (STT), **Azure OpenAI** (a `gpt-5-mini` deployment — LLM +
-vision narration), **Cartesia** (TTS). PPTX also needs **LibreOffice**
+vision narration), and either **Cartesia** or **Azure Speech** for TTS. PPTX also needs **LibreOffice**
 (`brew install --cask libreoffice`); without it, PDF uploads still work.
 
 ### Backend — Python 3.10–3.13

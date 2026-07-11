@@ -81,7 +81,7 @@ async def run_bot(websocket) -> None:
     stt = DeepgramSTTService(
         api_key=os.environ["DEEPGRAM_API_KEY"],
         live_options=LiveOptions(
-            model="nova-2",
+            model="nova-3",
             language="en-US",
             smart_format=True,
             punctuate=True,

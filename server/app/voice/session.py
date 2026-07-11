@@ -4,7 +4,7 @@ presenting a specific deck from the database.
 Vendor-blind: STT/TTS/LLM arrive as injected factories (see
 app/core/container.py — the only file that knows Deepgram/Cartesia/Azure
 exist). The pipeline shape is the proven one from the original demo:
-Silero VAD barge-in, greeting-only STT mute, RTVI slide-change pushes.
+Silero VAD barge-in, RTVI slide-change pushes.
 
 The presentation runs on AUTOPILOT: an activity watcher tracks whether the
 bot is speaking, an LLM completion is in flight, or the user is talking;
@@ -30,9 +30,11 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMRunFrame,
+    LLMTextFrame,
     TTSSpeakFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
@@ -44,11 +46,6 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.aggregators.sentence import SentenceAggregator
-from pipecat.processors.filters.stt_mute_filter import (
-    STTMuteConfig,
-    STTMuteFilter,
-    STTMuteStrategy,
-)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import (
     RTVIConfig,
@@ -62,15 +59,22 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
-from pipecat.utils.string import match_endofsentence
 from pipecat.utils.time import time_now_iso8601
 
 from ..core.telemetry import LatencyLogger
 from ..domain.models import DeckStatus
-from ..domain.ports import DeckRepo, LLMFactory, SessionLog, STTFactory, TTSFactory
+from ..domain.ports import (
+    DeckRepo,
+    LLMFactory,
+    QAExtractor,
+    SessionLog,
+    STTFactory,
+    TTSFactory,
+)
 from ..services.prompts import (
     build_advance_cue,
     build_closing_cue,
+    build_finish_cue,
     build_kickoff_cue,
     build_system_prompt,
 )
@@ -82,6 +86,7 @@ from .slide_images import (
     clear_temporary_slide_image,
     set_slide_image,
 )
+from .state import PresentationState
 
 # Seconds of full quiet before the autopilot advances to the next slide; the
 # longer variant applies right after user speech, leaving room for follow-ups
@@ -97,36 +102,6 @@ def _slide_change_frame(slide_number: int) -> RTVIServerMessageFrame:
     return RTVIServerMessageFrame(
         data={"message_type": "go_to_slide", "slide": slide_number}
     )
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences using the same detector the TTS path uses, so a
-    'sentence' here is exactly what the presenter spoke as one unit."""
-    sentences: list[str] = []
-    rest = text.strip()
-    while rest:
-        idx = match_endofsentence(rest)
-        if idx <= 0:  # no complete sentence left; keep the remainder as one
-            sentences.append(rest)
-            break
-        sentences.append(rest[:idx].strip())
-        rest = rest[idx:].strip()
-    return [s for s in sentences if s]
-
-
-def _completed_sentence_count(text: str) -> int:
-    """How many *finished* sentences the text contains — a trailing fragment with
-    no sentence-ending punctuation does not count. This is the index of the
-    interrupted sentence within the full narration when `text` is what was spoken."""
-    count = 0
-    rest = text.strip()
-    while rest:
-        idx = match_endofsentence(rest)
-        if idx <= 0:  # trailing fragment, still mid-sentence
-            break
-        count += 1
-        rest = rest[idx:].strip()
-    return count
 
 
 def _last_assistant_text(messages: list) -> str:
@@ -150,8 +125,38 @@ def _last_assistant_text(messages: list) -> str:
     return ""
 
 
+def _message_field(message: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either an object-like RTVI message or a plain dict."""
+    if isinstance(message, dict):
+        return message.get(key, default)
+    return getattr(message, key, default)
+
+
+def _parse_client_message(message: Any, expected: str) -> tuple[str | None, dict[str, Any]]:
+    """Normalize a browser client message across transport shapes, matching a
+    specific inner type (e.g. 'presentation-flow', 'qa-question'). Returns the
+    matched type and its data payload, or (None, {}) if it doesn't match."""
+    message_type = _message_field(message, "type")
+    data = _message_field(message, "data") or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    if message_type == expected:
+        return message_type, data
+
+    if message_type != "client-message":
+        return None, {}
+
+    inner_type = data.get("t") or data.get("type") or data.get("message_type")
+    inner_data = data.get("d", data.get("data"))
+    if inner_type != expected:
+        return None, {}
+    return str(inner_type), inner_data if isinstance(inner_data, dict) else {}
+
+
 class _PresenterState:
-    """Live activity flags the autopilot watchdog reads to decide 'is it quiet'."""
+    """Live activity flags the autopilot watchdog reads to decide 'is it quiet'.
+    Pipeline liveness only — presentation position lives in PresentationState."""
 
     def __init__(self) -> None:
         self.bot_speaking = False
@@ -163,6 +168,10 @@ class _PresenterState:
         # at each new LLM response. A hard pause reads this to know which sentence
         # was cut off, so Resume can replay from its start.
         self.spoken_text = ""
+        # Full text the LLM generated this turn (streaming, ahead of playback),
+        # kept by _GenTextTap. Diffed against spoken_text on a barge-in to know
+        # which sentences the audience never heard.
+        self.gen_text = ""
         # True while a completion is known to be coming (kickoff queued, cue
         # queued, or a tool result about to trigger the follow-up run).
         self.expecting_run = False
@@ -193,16 +202,35 @@ class _ActivityWatcher(FrameProcessor):
         state: _PresenterState,
         *,
         on_llm_response_start: Callable[[], Awaitable[None]] | None = None,
+        on_bot_started_speaking: Callable[[], None] | None = None,
+        on_user_started_speaking: Callable[[], None] | None = None,
     ):
         super().__init__()
         self._state = state
         self._on_llm_response_start = on_llm_response_start
+        self._on_bot_started_speaking = on_bot_started_speaking
+        self._on_user_started_speaking = on_user_started_speaking
 
     async def process_frame(self, frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         st = self._state
-        if isinstance(frame, BotStartedSpeakingFrame):
+        if isinstance(frame, InterruptionFrame):
+            # A barge-in (or a hard pause via rtvi.interrupt_bot) cancels the
+            # current turn and drains queued frames, so the LLMFullResponseEnd /
+            # BotStoppedSpeaking / FunctionCallResult frames that would normally
+            # clear these liveness flags can be dropped before they reach this
+            # tap. Reset them off the interruption itself — the one signal the
+            # interruption path guarantees reaches us — or a flag stays stuck
+            # True and busy() wedges the autopilot forever (the noise-barge-in
+            # stall). A fresh turn re-sets each flag via its own start frame.
+            st.bot_speaking = False
+            st.llm_in_flight = False
+            st.fn_pending = 0
+        elif isinstance(frame, BotStartedSpeakingFrame):
             st.bot_speaking = True
+            st.expecting_run = False  # the awaited output has begun
+            if self._on_bot_started_speaking is not None:
+                self._on_bot_started_speaking()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             st.bot_speaking = False
         elif isinstance(frame, LLMFullResponseStartFrame):
@@ -221,6 +249,8 @@ class _ActivityWatcher(FrameProcessor):
         elif isinstance(frame, UserStartedSpeakingFrame):
             st.user_speaking = True
             st.last_user_ts = asyncio.get_running_loop().time()
+            if self._on_user_started_speaking is not None:
+                self._on_user_started_speaking()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             st.user_speaking = False
             st.last_user_ts = asyncio.get_running_loop().time()
@@ -231,6 +261,25 @@ class _ActivityWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _GenTextTap(FrameProcessor):
+    """Sits right after the LLM, so it sees the full generated text of the current
+    turn as it streams — ahead of playback. A barge-in diffs this against the
+    playback-aligned spoken_text to recover the sentences the audience never heard."""
+
+    def __init__(self, state: _PresenterState):
+        super().__init__()
+        self._state = state
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        st = self._state
+        if isinstance(frame, LLMFullResponseStartFrame):
+            st.gen_text = ""
+        elif isinstance(frame, LLMTextFrame):
+            st.gen_text = f"{st.gen_text}{frame.text}" if st.gen_text else frame.text
+        await self.push_frame(frame, direction)
+
+
 class VoiceSessionRunner:
     def __init__(
         self,
@@ -238,20 +287,24 @@ class VoiceSessionRunner:
         stt: STTFactory,
         tts: TTSFactory,
         llm: LLMFactory,
+        qa_extractor: QAExtractor,
         repo: DeckRepo,
         sessions: SessionLog,
         manager: ConnectionManager,
         latency: LatencyLogger,
         always_show_slide_image: bool = False,
+        tts_error_explainer: Callable[[str], str] | None = None,
     ):
         self._stt = stt
         self._tts = tts
         self._llm = llm
+        self._qa_extractor = qa_extractor
         self._repo = repo
         self._sessions = sessions
         self._manager = manager
         self._latency = latency
         self._always_show_slide_image = always_show_slide_image
+        self._tts_error_explainer = tts_error_explainer
 
     async def run(self, websocket: Any, deck_id: str) -> None:
         if not self._manager.try_acquire():
@@ -274,23 +327,34 @@ class VoiceSessionRunner:
         session_id = await self._sessions.start(deck_id)
         events: list[dict] = []
         turns: list[dict] = []  # {role, content, timestamp, slide} — the debug transcript
-        slide_state = {"current": 1}  # mutable cell; closures below read/write it
-        # Slides substantively presented or discussed so far — includes both the
-        # linear walk and any Q&A jumps. When the linear flow later reaches one of
-        # these, the presenter acknowledges it instead of repeating it verbatim.
-        covered: set[int] = set()
 
-        # Autopilot: engaged on connect, disengaged by the pause tool or after
-        # the closing. progress["next"] is the next slide in the LINEAR flow —
-        # Q&A jumps move slide_state but not progress, so after a digression
-        # the talk resumes where it left off.
+        # ALL presentation position/flow state — current slide, linear progress,
+        # coverage, autopilot, interruption tracking, pause buffer, Q&A pairing —
+        # lives in this one object; see app/voice/state.py for the ownership
+        # model. `state` below is pipeline liveness only. The kickoff turn is
+        # just the short opening; slide 1 still runs through the normal
+        # interruptible flow.
+        ps = PresentationState(slide_total)
         state = _PresenterState()
-        autopilot = {"on": False}
-        progress = {"next": 2, "outro_done": False}  # kickoff presents slide 1
+
+        def on_user_speech_start() -> None:
+            remainder = ps.user_speech_started(
+                gen_text=state.gen_text, spoken_text=state.spoken_text
+            )
+            if remainder:
+                logger.info(
+                    f"Narration of slide {ps.interrupted_slide} interrupted; "
+                    f"{len(remainder)} chars unheard"
+                )
 
         # --- Transport: audio in/out over the WebSocket, Silero VAD for barge-in ---
+        # confidence/start_secs are deliberately conservative: barge-in must be
+        # real speech, not a brief noise blip or speaker echo (a bot whose own
+        # voice trips the mic will interrupt itself in a loop — hence the
+        # headphones tip in the UI). Higher confidence + a longer sustained-speech
+        # window filter those out at the cost of a slightly less twitchy interrupt.
         vad = SileroVADAnalyzer(
-            params=VADParams(confidence=0.7, start_secs=0.2, stop_secs=0.8, min_volume=0.6)
+            params=VADParams(confidence=0.8, start_secs=0.3, stop_secs=0.8, min_volume=0.6)
         )
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
@@ -322,7 +386,18 @@ class VoiceSessionRunner:
                 "slide_number": {
                     "type": "integer",
                     "description": f"The slide to show, from 1 to {slide_total}.",
-                }
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["answer_question", "navigation"],
+                    "description": (
+                        "Why you are switching. 'answer_question': a detour to answer "
+                        "an audience question — the talk returns to its own flow "
+                        "afterwards. 'navigation': the audience explicitly asked to "
+                        "move (next, previous, skip to a topic) — the talk continues "
+                        "forward from the new slide."
+                    ),
+                },
             },
             required=["slide_number"],
         )
@@ -412,12 +487,6 @@ class VoiceSessionRunner:
 
         rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-        # Mute STT only while the opening greeting plays, so the bot can't interrupt
-        # itself before the user has said anything. After that, barge-in is fully live.
-        stt_mute = STTMuteFilter(
-            config=STTMuteConfig(strategies={STTMuteStrategy.MUTE_UNTIL_FIRST_BOT_COMPLETE})
-        )
-
         # Records real spoken turns (not tool-call plumbing or image blobs), each
         # tagged with whichever slide was on screen when it happened — this is
         # what actually gets persisted for debugging, not raw LLM context.
@@ -431,26 +500,35 @@ class VoiceSessionRunner:
                         "role": msg.role,
                         "content": msg.content,
                         "timestamp": msg.timestamp,
-                        "slide": slide_state["current"],
+                        "slide": ps.current_slide,
                     }
                 )
+                # A spoken user turn is always real audience speech (cues go
+                # straight into context, never through STT). The assistant turn
+                # that follows a pending question is its answer.
+                if msg.role == "user":
+                    ps.qa_open(msg.content, ps.current_slide)
+                elif msg.role == "assistant":
+                    qa_try_close(msg.content, ps.current_slide)
 
         pipeline = Pipeline(
             [
                 transport.input(),
                 stt,
-                stt_mute,
                 transcript.user(),
                 aggregator.user(),
                 rtvi,
                 llm,
+                _GenTextTap(state),  # full generated text, ahead of playback
                 SentenceAggregator(),  # smoother TTS: send whole sentences, not fragments
                 tts,
                 transport.output(),
                 _ActivityWatcher(
                     state,
                     on_llm_response_start=expire_temporary_slide_image,
-                ),  # feeds the autopilot watchdog
+                    on_bot_started_speaking=ps.qa_on_bot_speech_start,
+                    on_user_started_speaking=on_user_speech_start,
+                ),  # feeds the autopilot watchdog + Q&A pairing
                 transcript.assistant(),
                 aggregator.assistant(),
             ]
@@ -464,6 +542,71 @@ class VoiceSessionRunner:
             ),
             observers=[RTVIObserver(rtvi), LatencyObserver(self._latency, session_id)],
         )
+        tts_failed = {"seen": False}
+
+        async def cancel_after_tts_error() -> None:
+            await asyncio.sleep(0.1)
+            await task.cancel()
+
+        @tts.event_handler("on_connection_error")
+        async def on_tts_connection_error(_tts, error: str) -> None:
+            if tts_failed["seen"]:
+                return
+            tts_failed["seen"] = True
+            ps.autopilot_on = False
+            message = (
+                self._tts_error_explainer(error)
+                if self._tts_error_explainer is not None
+                else f"Speech connection failed: {error}"
+            )
+            logger.error(f"TTS connection error: {message}")
+            await task.queue_frame(
+                RTVIServerMessageFrame(
+                    data={
+                        "message_type": "session_error",
+                        "code": "tts_connection_failed",
+                        "message": message,
+                    }
+                )
+            )
+            asyncio.create_task(cancel_after_tts_error())
+
+        # --- Q&A extraction runs off the voice path; entries push when ready ---
+        qa_tasks: set[asyncio.Task] = set()
+
+        async def process_qa(
+            question: str, answer: str, ask_slide: int, answer_slide: int
+        ) -> None:
+            try:
+                result = await self._qa_extractor.extract(utterance=question, reply=answer)
+            except Exception:
+                logger.exception("Q&A extraction failed")
+                return
+            if result is None:
+                logger.info(f"Q&A skipped (not a genuine question): {question!r}")
+                return
+            entry = {
+                "question": result.question,
+                "answer": result.answer,
+                "askedSlide": ask_slide,
+                "answeredSlide": answer_slide,
+                "timestamp": time_now_iso8601(),
+            }
+            events.append({"type": "qa_logged", **entry})
+            await task.queue_frame(
+                RTVIServerMessageFrame(data={"message_type": "qa_logged", "entry": entry})
+            )
+            logger.info(f"Q&A logged: {result.question!r} (slide {ask_slide}->{answer_slide})")
+
+        def qa_try_close(answer: str, answer_slide: int) -> None:
+            pending = ps.qa_take_closable(answer)
+            if pending is None:
+                return
+            t = asyncio.create_task(
+                process_qa(pending["question"], answer.strip(), pending["ask_slide"], answer_slide)
+            )
+            qa_tasks.add(t)
+            t.add_done_callback(qa_tasks.discard)
 
         # --- Tool handler: push the slide change to the browser, feed notes back ---
         async def handle_go_to_slide(params) -> None:
@@ -476,17 +619,18 @@ class VoiceSessionRunner:
 
             await task.queue_frame(_slide_change_frame(n))
             slide = deck.slides[n - 1]
-            slide_state["current"] = n
-            covered.add(n)  # a Q&A jump counts as having discussed this slide
+            reason = str(params.arguments.get("reason", "") or "").lower()
+            ps.show_slide(n, navigation=reason == "navigation")
             events.append(
                 {
                     "type": "slide_change",
                     "slide": n,
                     "title": slide.title,
+                    "reason": reason or "unspecified",
                     "timestamp": time_now_iso8601(),
                 }
             )
-            logger.info(f"go_to_slide -> {n} ({slide.title})")
+            logger.info(f"go_to_slide -> {n} ({slide.title}) reason={reason or 'unspecified'}")
 
             if self._always_show_slide_image:
                 await set_slide_image_context(n, temporary=False)
@@ -504,7 +648,7 @@ class VoiceSessionRunner:
         async def handle_look_at_slide(params) -> None:
             requested = params.arguments.get("slide_number")
             try:
-                n = resolve_slide_number(requested, default=slide_state["current"])
+                n = resolve_slide_number(requested, default=ps.current_slide)
             except ValueError:
                 await params.result_callback({"error": f"Invalid slide number: {requested!r}"})
                 return
@@ -545,7 +689,7 @@ class VoiceSessionRunner:
             if action not in ("pause", "resume"):
                 await params.result_callback({"error": f"Unknown action: {action!r}"})
                 return
-            autopilot["on"] = action == "resume"
+            ps.autopilot_on = action == "resume"
             events.append({"type": f"presentation_{action}", "timestamp": time_now_iso8601()})
             logger.info(f"Presentation flow: {action}")
             await params.result_callback({"ok": True, "presentation": action})
@@ -557,6 +701,7 @@ class VoiceSessionRunner:
 
         # --- Stage directions: append a cue to the context and trigger a run ---
         async def send_cue(text: str) -> None:
+            ps.qa_reset()  # a stage cue drives autopilot narration, never an answer
             clear_temporary_slide_image(context.messages, slide_image_state)
             context.messages.append({"role": "user", "content": text})
             state.expect_run()
@@ -568,47 +713,71 @@ class VoiceSessionRunner:
         # no speech to trip VAD, so they drive the pipeline directly here: pause
         # interrupts mid-sentence and remembers where narration was cut; resume
         # re-speaks from the start of that sentence.
-        resume_buffer = {"text": ""}
-
         async def do_pause() -> None:
-            resume_text = ""
-            if state.bot_speaking:
-                spoken = state.spoken_text.strip()
-                full = _last_assistant_text(context.messages)
-                if full:
-                    sentences = _split_sentences(full)
-                    # Count only sentences finished before the cut; the next one is
-                    # the sentence that got interrupted, so replay starts there.
-                    done = _completed_sentence_count(spoken) if spoken else 0
-                    done = max(0, min(done, len(sentences)))
-                    resume_text = " ".join(sentences[done:]).strip()
-            resume_buffer["text"] = resume_text
-            autopilot["on"] = False
+            resume_text = ps.capture_pause(
+                bot_speaking=state.bot_speaking,
+                full_text=_last_assistant_text(context.messages),
+                spoken_text=state.spoken_text,
+            )
             await rtvi.interrupt_bot()  # cut the audio mid-sentence, right now
             events.append({"type": "presentation_pause", "timestamp": time_now_iso8601()})
             logger.info(f"Presentation paused (replay buffer: {len(resume_text)} chars)")
 
         async def do_resume() -> None:
-            resume_text = resume_buffer["text"]
-            resume_buffer["text"] = ""
+            resume_text = ps.take_resume_text()
             events.append({"type": "presentation_resume", "timestamp": time_now_iso8601()})
             if resume_text:
                 # Re-speak the interrupted sentence (and the rest of that turn)
                 # verbatim via TTS — no LLM round-trip, so the words match exactly
-                # what the audience was hearing. queue the speech first, then
-                # re-arm autopilot: TTS starts well within the watchdog's quiet
-                # window, so it won't skip ahead before the replay begins.
+                # what the audience was hearing. expect_run() marks the pipeline
+                # busy until this speech actually starts, so re-arming autopilot
+                # below can't race the watchdog into advancing over the replay.
+                state.expect_run()
                 await task.queue_frame(TTSSpeakFrame(resume_text))
                 logger.info(f"Presentation resumed; replaying {len(resume_text)} chars")
             else:
                 logger.info("Presentation resumed; nothing buffered to replay")
-            autopilot["on"] = True
+            ps.autopilot_on = True
 
         @rtvi.event_handler("on_client_message")
         async def on_client_message(rtvi_proc, message) -> None:
-            if message.type != "presentation-flow":
+            # Typed questions have no STT transcript, so the browser tells us when
+            # the audience asks one by text; spoken ones are caught server-side.
+            qa_type, qa_data = _parse_client_message(message, "qa-question")
+            if qa_type == "qa-question":
+                # A typed question has no VAD speech-start, so release the
+                # narration claim here; the follow-up answer turn must not be
+                # mistaken for slide narration if it gets barged into.
+                ps.release_narration()
+                ps.qa_open(str(qa_data.get("text", "")), ps.current_slide)
+                await rtvi_proc.send_server_response(message, {"ok": True})
                 return
-            data = message.data or {}
+
+            # The audience flipped the slide by hand in the browser: mirror it
+            # so slide tags and image lookups stay truthful server-side (the
+            # model separately gets a hidden text note from the browser).
+            ms_type, ms_data = _parse_client_message(message, "manual-slide")
+            if ms_type == "manual-slide":
+                try:
+                    ps.sync_manual_slide(int(ms_data.get("slide")))
+                except (TypeError, ValueError):
+                    await rtvi_proc.send_error_response(
+                        message, f"Bad slide: {ms_data.get('slide')!r}"
+                    )
+                    return
+                events.append(
+                    {
+                        "type": "manual_slide",
+                        "slide": ps.current_slide,
+                        "timestamp": time_now_iso8601(),
+                    }
+                )
+                await rtvi_proc.send_server_response(message, {"ok": True})
+                return
+
+            message_type, data = _parse_client_message(message, "presentation-flow")
+            if message_type != "presentation-flow":
+                return
             action = str(data.get("action", "")).lower()
             if action == "pause":
                 await do_pause()
@@ -626,9 +795,8 @@ class VoiceSessionRunner:
             await task.queue_frame(_slide_change_frame(1))
             if self._always_show_slide_image:
                 await set_slide_image_context(1, temporary=False)
-            covered.add(1)  # the kickoff presents slide 1
             await send_cue(build_kickoff_cue())
-            autopilot["on"] = True
+            ps.autopilot_on = True
 
         @transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(_transport, _client):
@@ -643,7 +811,7 @@ class VoiceSessionRunner:
             idle_since: float | None = None
             while True:
                 await asyncio.sleep(0.5)
-                if not autopilot["on"] or state.busy():
+                if not ps.autopilot_on or state.busy():
                     idle_since = None
                     continue
                 now = loop.time()
@@ -658,11 +826,20 @@ class VoiceSessionRunner:
                 if now - idle_since < quiet:
                     continue
                 idle_since = None
-                n = progress["next"]
-                if n <= slide_total:
-                    progress["next"] = n + 1
-                    revisit = n in covered  # a Q&A jump already showed this slide
-                    covered.add(n)
+                # A slide whose narration was cut off gets finished before the
+                # talk moves on — otherwise the audience permanently misses the
+                # rest of it (or the model restarts it from the top).
+                finish = ps.take_interrupted()
+                if finish is not None:
+                    n, remainder = finish
+                    events.append(
+                        {"type": "auto_finish", "slide": n, "timestamp": time_now_iso8601()}
+                    )
+                    await send_cue(build_finish_cue(n, remainder))
+                    continue
+                advance = ps.advance()
+                if advance is not None:
+                    n, revisit = advance
                     events.append(
                         {
                             "type": "auto_advance",
@@ -672,9 +849,7 @@ class VoiceSessionRunner:
                         }
                     )
                     await send_cue(build_advance_cue(n, already_covered=revisit))
-                elif not progress["outro_done"]:
-                    progress["outro_done"] = True
-                    autopilot["on"] = False  # Q&A from here; the user drives
+                elif ps.begin_closing():
                     events.append({"type": "closing", "timestamp": time_now_iso8601()})
                     await send_cue(build_closing_cue())
 
@@ -685,6 +860,8 @@ class VoiceSessionRunner:
             await runner.run(task)
         finally:
             watchdog.cancel()
+            for t in list(qa_tasks):
+                t.cancel()
             try:
                 await self._sessions.finish(session_id, turns, events)
             except Exception:

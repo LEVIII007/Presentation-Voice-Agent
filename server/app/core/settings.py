@@ -10,8 +10,15 @@ class Settings(BaseSettings):
 
     # Vendors
     deepgram_api_key: str = ""
+    tts_provider: str = "cartesia"  # "cartesia" | "azure"
     cartesia_api_key: str = ""
     cartesia_voice_id: str = "71a7ad14-091c-4e8e-a314-022ece01c121"
+    # Azure Speech (used only when tts_provider == "azure"). V2 text-stream API
+    # is region-locked (wss://<region>.tts.speech.microsoft.com/...), so a
+    # region is required — not the custom cognitiveservices endpoint.
+    azure_speech_key: str = ""
+    azure_speech_region: str = "eastus"
+    azure_speech_voice: str = "en-US-Ava:DragonHDLatestNeural"
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_api_version: str = "2025-01-01-preview"

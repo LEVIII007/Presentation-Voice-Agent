@@ -33,6 +33,8 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
+from ..core.latency_roles import infer_latency_role
+
 _NS_PER_MS = 1_000_000
 
 
@@ -125,11 +127,14 @@ class LatencyObserver(BaseObserver):
             if isinstance(frame, MetricsFrame):
                 for m in frame.data or []:
                     if isinstance(m, TTFBMetricsData) and m.value:
+                        role = infer_latency_role(getattr(m, "processor", None))
                         self._log.event(
                             "ttfb",
                             session=self._sid,
                             human=f"[latency] ttfb {m.processor}={_ms(int(m.value * 1e9))}ms",
+                            role=role,
                             processor=m.processor,
+                            model=getattr(m, "model", None),
                             ttfb_ms=round(m.value * 1000, 1),
                         )
                 return

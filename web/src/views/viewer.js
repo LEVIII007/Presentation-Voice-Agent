@@ -1,13 +1,11 @@
 // The viewer — the live talkable deck. This is the shareable, mobile-friendly
 // screen. Renders each slide (image if ingested, else title+bullets), a slide
-// rail for manual nav, live captions, starter chips, a typed-question fallback,
-// mic priming, thinking indicator, and an end screen with the creator CTA.
+// rail for manual nav, live captions, a typed-question fallback, mic priming,
+// thinking indicator, and an end screen with the creator CTA.
 
 import { api, escapeHtml } from "../api.js";
 import { h, mount, toast } from "../dom.js";
 import { createVoiceSession } from "../voice.js";
-
-const STARTERS = ["Give me the overview", "What's the most important point?", "Summarize this in one line"];
 
 const STATUS_TEXT = {
   connecting: "Connecting…",
@@ -19,6 +17,21 @@ const STATUS_TEXT = {
   offline: "Offline",
   error: "Error",
 };
+
+const ICONS = {
+  captions: "<svg viewBox='0 0 24 24'><path d='M11 6 7.5 9H5v6h2.5L11 18z'/><path d='M14.5 8.5a4.5 4.5 0 0 1 0 7'/><path d='M16.5 6a8 8 0 0 1 0 12'/></svg>",
+  pause: "<svg viewBox='0 0 24 24'><path d='M8 6h3v12H8z' fill='currentColor' stroke='none'/><path d='M13 6h3v12h-3z' fill='currentColor' stroke='none'/></svg>",
+  play: "<svg viewBox='0 0 24 24'><path d='M9 7v10l8-5z' fill='currentColor' stroke='none'/></svg>",
+  stop: "<svg viewBox='0 0 24 24'><rect x='7' y='7' width='10' height='10' rx='2' fill='currentColor' stroke='none'/></svg>",
+};
+
+function iconEl(name) {
+  return h("span", { class: "control-icon", "aria-hidden": "true", html: ICONS[name] });
+}
+
+function controlNameEl(label) {
+  return h("span", { class: "control-name" }, label);
+}
 
 export async function renderViewer(deckId) {
   mount(h("div", { class: "page" }, h("div", { class: "spinner" })));
@@ -41,12 +54,17 @@ export async function renderViewer(deckId) {
   const total = slides.length;
   let current = 1;
   let captionsOn = true;
+  let latestCaption = "Press Start and allow the microphone to begin — or type your question below.";
   let presentationPaused = false;
   let flowBusy = false;
   let session = null;
   let cleanup = () => {};
   let statusState = "offline";
   let statusLabel = STATUS_TEXT.offline;
+  // Q&A history: the backend pairs each genuine audience question with its
+  // answer (filtering greetings, commands, and garble) and pushes a cleaned
+  // entry; we just render them here, newest first.
+  const qaLog = []; // { question, answer, askedSlide, answeredSlide }
 
   // --- Elements ---
   const rail = h("div", { class: "rail" });
@@ -56,32 +74,66 @@ export async function renderViewer(deckId) {
   const breadcrumb = h("div", { class: "nav-breadcrumb" }, "");
   const prevBtn = h("button", { class: "stage-nav prev", title: "Previous slide", onClick: () => go(current - 1, true) }, "‹");
   const nextBtn = h("button", { class: "stage-nav next", title: "Next slide", onClick: () => go(current + 1, true) }, "›");
-  const stageFlowBtn = h("button", { class: "btn ghost stage-action stage-flow", type: "button", onClick: togglePresentationFlow }, "Pause");
-  const stageStopBtn = h("button", { class: "btn danger stage-action stage-stop", type: "button", onClick: stopSession }, "Stop");
-  const stageActions = h("div", { class: "stage-actions" }, stageFlowBtn, stageStopBtn);
-  stageActions.hidden = true;
-  const stage = h("div", { class: "stage" }, prevBtn, breadcrumb, stageInner, nextBtn, stageActions);
+  const flowIcon = iconEl("pause");
+  const flowName = controlNameEl("Pause");
+  const stageFlowBtn = h("button", {
+    class: "session-icon-btn stage-flow",
+    type: "button",
+    title: "Pause automatic flow",
+    "aria-label": "Pause automatic flow",
+    onClick: togglePresentationFlow,
+  }, flowIcon, flowName);
+  stageFlowBtn.hidden = true;
+  const stage = h("div", { class: "stage" }, prevBtn, breadcrumb, stageInner, nextBtn);
 
-  const statusPill = h("span", { class: "pill" }, h("span", { class: "dot" }), h("span", { id: "st-text" }, "Offline"));
-  const caption = h("div", { class: "caption" }, "Press Start and allow the microphone to begin — or type your question below.");
-  const chips = h("div", { class: "chips" });
-  STARTERS.forEach((q) => chips.append(h("button", { class: "chip", onClick: () => ask(q) }, q)));
-
-  const textInput = h("input", { type: "text", placeholder: "Type a question instead…" });
+  const statusPill = h("div", { class: "control-status offline" },
+    h("span", { class: "status-indicator-dot", "aria-hidden": "true" }),
+    h("span", { id: "st-text", class: "status-label" }, "Offline"));
+  const caption = h("div", { class: "caption" }, latestCaption);
+  const textInput = h("input", { type: "text", placeholder: "Type a question…" });
   const textForm = h("form", { class: "textbar", onSubmit: (e) => { e.preventDefault(); const v = textInput.value.trim(); if (v) { ask(v); textInput.value = ""; } } },
     textInput, h("button", { class: "btn sm", type: "submit" }, "Send"));
 
-  const startBtn = h("button", { class: "btn big", onClick: toggleConnect }, "▶ Start presentation");
-  const capToggle = h("span", { class: "toggle-cap", onClick: () => { captionsOn = !captionsOn; capToggle.textContent = captionsOn ? "Captions: on" : "Captions: off"; if (!captionsOn) caption.textContent = ""; } }, "Captions: on");
-
-  const controls = h("div", { class: "dock-controls" }, startBtn, capToggle);
+  const startIcon = iconEl("play");
+  const startName = controlNameEl("Start");
+  const startBtn = h("button", {
+    class: "session-icon-btn start-control",
+    type: "button",
+    title: "Start presentation",
+    "aria-label": "Start presentation",
+    onClick: toggleConnect,
+  }, startIcon, startName);
+  const capIcon = iconEl("captions");
+  const capName = controlNameEl("Captions");
+  const capToggle = h("button", {
+    class: "session-icon-btn toggle-cap active",
+    type: "button",
+    title: "Turn captions off",
+    "aria-label": "Turn captions off",
+    onClick: toggleCaptions,
+  }, capIcon, capName);
+  const controls = h("div", { class: "control-panel" }, capToggle, stageFlowBtn, startBtn, statusPill);
+  const extraActions = h("div", { class: "dock-extra" });
   const dock = h("div", { class: "dock" },
-    h("div", { class: "dock-status" }, statusPill),
-    caption, chips, textForm, controls,
+    caption, textForm, controls, extraActions,
     h("div", { class: "hint", style: "font-size:12px;color:var(--faint)" }, "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo."),
   );
+  syncCaptionsControl();
 
-  const viewer = h("div", { class: "viewer" }, rail, stage, dock);
+  // --- Q&A history panel (right side; a drawer on mobile) ---
+  const qaList = h("div", { class: "qa-list" });
+  const qaCount = h("span", { class: "qa-count" }, "0");
+  const qaPanel = h("aside", { class: "qa-panel" },
+    h("div", { class: "qa-head" },
+      h("span", { class: "qa-title" }, "Your questions ", qaCount),
+      h("button", { class: "qa-x", type: "button", title: "Hide", onClick: closeQa }, "×")),
+    qaList);
+  const qaBackdrop = h("div", { class: "qa-backdrop", onClick: closeQa });
+  const qaFabCount = h("span", { class: "qa-fab-count" }, "0");
+  const qaFab = h("button", { class: "qa-fab", type: "button", title: "Your questions", onClick: openQa },
+    "Questions", qaFabCount);
+
+  const viewer = h("div", { class: "viewer" }, rail, stage, qaPanel, dock, qaBackdrop, qaFab);
   mount(viewer);
 
   // --- Rail ---
@@ -134,6 +186,49 @@ export async function renderViewer(deckId) {
     showBreadcrumb._t = setTimeout(() => breadcrumb.classList.remove("show"), 2200);
   }
 
+  // --- Q&A history ---
+  function openQa() { viewer.classList.add("qa-open"); }
+  function closeQa() { viewer.classList.remove("qa-open"); }
+
+  function updateQaCount() {
+    const n = String(qaLog.length);
+    qaCount.textContent = n;
+    qaFabCount.textContent = n;
+    qaFab.classList.toggle("has", qaLog.length > 0);
+  }
+
+  function renderQaLog() {
+    if (qaLog.length === 0) {
+      qaList.replaceChildren(h("div", { class: "qa-empty" },
+        "Questions you ask during the talk show up here — with the answer and the slide you were on. Tap one to jump back to it."));
+      return;
+    }
+    qaList.replaceChildren(...qaLog.map((e) => {
+      const badge = e.answeredSlide !== e.askedSlide
+        ? `Slide ${e.askedSlide} → ${e.answeredSlide}`
+        : `Slide ${e.askedSlide}`;
+      return h("button", { class: "qa-item", type: "button", title: `Jump to slide ${e.answeredSlide}`, onClick: () => go(e.answeredSlide, true) },
+        h("div", { class: "qa-item-top" },
+          h("span", { class: "qa-q" }, e.question),
+          h("span", { class: "qa-slide" }, badge)),
+        h("div", { class: "qa-a" }, e.answer));
+    }));
+  }
+
+  // A cleaned Q&A entry pushed by the backend: { question, answer, askedSlide,
+  // answeredSlide }. Pairing and filtering already happened server-side.
+  function recordQuestion(entry) {
+    if (!entry || !entry.question) return;
+    qaLog.unshift({
+      question: entry.question,
+      answer: entry.answer || "",
+      askedSlide: entry.askedSlide,
+      answeredSlide: entry.answeredSlide ?? entry.askedSlide,
+    });
+    updateQaCount();
+    renderQaLog();
+  }
+
   function renderStatus() {
     let state = statusState;
     let text = statusLabel || STATUS_TEXT[state] || "";
@@ -141,7 +236,7 @@ export async function renderViewer(deckId) {
       state = "paused";
       text = STATUS_TEXT.paused;
     }
-    statusPill.className = `pill ${state}${["speaking", "listening", "thinking", "connected"].includes(state) ? " live" : ""}`;
+    statusPill.className = `control-status ${state}${["speaking", "listening", "thinking", "connected"].includes(state) ? " live" : ""}`;
     document.getElementById("st-text").textContent = text;
   }
 
@@ -152,17 +247,36 @@ export async function renderViewer(deckId) {
   }
 
   function setCaption(html) {
+    latestCaption = html;
     if (captionsOn) caption.innerHTML = html;
+  }
+
+  function syncCaptionsControl() {
+    capToggle.classList.toggle("active", captionsOn);
+    const label = captionsOn ? "Turn captions off" : "Turn captions on";
+    capToggle.title = label;
+    capToggle.setAttribute("aria-label", label);
+  }
+
+  function toggleCaptions() {
+    captionsOn = !captionsOn;
+    syncCaptionsControl();
+    caption.innerHTML = captionsOn ? latestCaption : "";
   }
 
   function syncSessionControls({ live = false, busy = false } = {}) {
     startBtn.disabled = busy;
-    startBtn.textContent = live ? "■ End presentation" : "▶ Start presentation";
     startBtn.classList.toggle("live", live);
-    stageActions.hidden = !live;
-    stageStopBtn.disabled = busy || flowBusy;
+    startBtn.title = live ? "Stop presentation" : "Start presentation";
+    startBtn.setAttribute("aria-label", live ? "Stop presentation" : "Start presentation");
+    startIcon.innerHTML = live ? ICONS.stop : ICONS.play;
+    startName.textContent = live ? "Stop" : "Start";
+    stageFlowBtn.hidden = !live;
     stageFlowBtn.disabled = busy || flowBusy;
-    stageFlowBtn.textContent = presentationPaused ? "Resume" : "Pause";
+    stageFlowBtn.title = presentationPaused ? "Resume automatic flow" : "Pause automatic flow";
+    stageFlowBtn.setAttribute("aria-label", stageFlowBtn.title);
+    flowIcon.innerHTML = presentationPaused ? ICONS.play : ICONS.pause;
+    flowName.textContent = presentationPaused ? "Resume" : "Pause";
     stageFlowBtn.classList.toggle("paused", presentationPaused);
   }
 
@@ -251,12 +365,13 @@ export async function renderViewer(deckId) {
       onStatus: setStatus,
       onCaption: setCaption,
       onSlide: (n) => { renderSlide(n); showBreadcrumb("Moved here from your question"); },
+      onQaLogged: recordQuestion,
       onDisconnected: () => {
         presentationPaused = false;
         flowBusy = false;
         session = null;
         syncSessionControls();
-        showEndScreen();
+        if (statusState !== "error") showEndScreen();
       },
     });
 
@@ -284,8 +399,8 @@ export async function renderViewer(deckId) {
 
   function offerTextOnly() {
     if (document.getElementById("text-only-btn")) return;
-    const btn = h("button", { id: "text-only-btn", class: "btn ghost", onClick: () => { btn.remove(); startSession(false); } }, "Continue without mic (text only)");
-    controls.append(btn);
+    const btn = h("button", { id: "text-only-btn", class: "btn ghost text-only-btn", type: "button", onClick: () => { btn.remove(); startSession(false); } }, "Continue without mic");
+    extraActions.append(btn);
   }
 
   function showEndScreen() {
@@ -312,6 +427,11 @@ export async function renderViewer(deckId) {
   window.addEventListener("keydown", onKey);
 
   renderSlide(1);
+  updateQaCount();
+  renderQaLog();
+  // Open by default where there's room; on phones it stays a closed drawer so
+  // it never covers the slide until the viewer taps the Questions button.
+  if (!window.matchMedia("(max-width: 720px)").matches) openQa();
 
   cleanup = () => {
     window.removeEventListener("keydown", onKey);

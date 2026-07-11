@@ -133,10 +133,12 @@ def test_barge_in_emits_interrupted():
 def test_metrics_ttfb():
     log = FakeLatencyLogger()
     obs = LatencyObserver(log, "s")
-    mf = MetricsFrame(data=[TTFBMetricsData(processor="CartesiaTTSService", model="sonic-2", value=0.123)])
+    mf = MetricsFrame(data=[TTFBMetricsData(processor="AzureV2TTSService", model="en-US-Ava", value=0.123)])
     asyncio.run(_feed(obs, [(mf, 5000)]))
     tt = log.ttfbs()
     assert len(tt) == 1 and tt[0]["ttfb_ms"] == 123.0, tt
+    assert tt[0]["role"] == "tts", tt
+    assert tt[0]["model"] == "en-US-Ava", tt
     print("ok: metrics ttfb", tt[0])
 
 

@@ -9,20 +9,9 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-SERIES_ORDER = ("stt", "llm", "tts")
-SERIES_META = {
-    "stt": {"label": "Deepgram STT", "processor_prefix": "DeepgramSTTService"},
-    "llm": {"label": "Azure LLM", "processor_prefix": "AzureLLMService"},
-    "tts": {"label": "Cartesia TTS", "processor_prefix": "CartesiaTTSService"},
-}
+from ..core.latency_roles import ROLE_META, ROLE_ORDER, infer_latency_role
+
 DEDUPE_WINDOW_SECONDS = 0.1
-
-
-def _series_key(processor: str) -> str | None:
-    for key in SERIES_ORDER:
-        if processor.startswith(SERIES_META[key]["processor_prefix"]):
-            return key
-    return None
 
 
 def _round1(value: float | None) -> float | None:
@@ -42,7 +31,7 @@ def _empty_session(session_id: str) -> dict[str, Any]:
         "session": session_id,
         "started_at": None,
         "ended_at": None,
-        "series": {key: [] for key in SERIES_ORDER},
+        "series": {key: [] for key in ROLE_ORDER},
     }
 
 
@@ -53,7 +42,7 @@ def build_latency_report(path: Path) -> dict[str, Any]:
             "exists": False,
             "file": str(path),
             "dedupe_window_ms": int(DEDUPE_WINDOW_SECONDS * 1000),
-            "series": [{"key": key, "label": SERIES_META[key]["label"]} for key in SERIES_ORDER],
+            "series": [{"key": key, "label": ROLE_META[key]["label"]} for key in ROLE_ORDER],
             "sessions": [],
             "totals": {"sessions": 0, "samples": 0},
         }
@@ -79,11 +68,12 @@ def build_latency_report(path: Path) -> dict[str, Any]:
 
             session_id = extra.get("session")
             processor = str(extra.get("processor") or "")
-            series_key = _series_key(processor)
-            if not session_id or not series_key:
+            series_key = extra.get("role") or infer_latency_role(processor)
+            if not session_id or series_key not in ROLE_ORDER:
                 continue
 
             ttfb_ms = extra.get("ttfb_ms")
+            model = extra.get("model")
             time_info = record.get("time") or {}
             timestamp = time_info.get("timestamp")
             time_repr = time_info.get("repr")
@@ -97,7 +87,7 @@ def build_latency_report(path: Path) -> dict[str, Any]:
             except (TypeError, ValueError):
                 continue
 
-            dedupe_key = (session_id, processor, ttfb_ms)
+            dedupe_key = (session_id, series_key, processor, model, ttfb_ms)
             prev_ts = last_seen.get(dedupe_key)
             if prev_ts is not None and timestamp - prev_ts <= DEDUPE_WINDOW_SECONDS:
                 continue
@@ -113,7 +103,9 @@ def build_latency_report(path: Path) -> dict[str, Any]:
                     "at": at,
                     "timestamp": timestamp,
                     "ttfb_ms": ttfb_ms,
+                    "role": series_key,
                     "processor": processor,
+                    "model": model,
                 }
             )
 
@@ -140,7 +132,7 @@ def build_latency_report(path: Path) -> dict[str, Any]:
             "stats": {},
         }
 
-        for key in SERIES_ORDER:
+        for key in ROLE_ORDER:
             points = sorted(session["series"][key], key=lambda point: point["timestamp"])
             values = [point["ttfb_ms"] for point in points]
             total_samples += len(points)
@@ -156,7 +148,9 @@ def build_latency_report(path: Path) -> dict[str, Any]:
                     "sequence": index + 1,
                     "offset_s": _round1((point["at"] - started_at).total_seconds()),
                     "ttfb_ms": point["ttfb_ms"],
+                    "role": point["role"],
                     "processor": point["processor"],
+                    "model": point["model"],
                     "at": point["at"].isoformat(),
                 }
                 for index, point in enumerate(points)
@@ -168,7 +162,7 @@ def build_latency_report(path: Path) -> dict[str, Any]:
         "exists": True,
         "file": str(path),
         "dedupe_window_ms": int(DEDUPE_WINDOW_SECONDS * 1000),
-        "series": [{"key": key, "label": SERIES_META[key]["label"]} for key in SERIES_ORDER],
+        "series": [{"key": key, "label": ROLE_META[key]["label"]} for key in ROLE_ORDER],
         "sessions": rendered_sessions,
         "totals": {"sessions": len(rendered_sessions), "samples": total_samples},
     }

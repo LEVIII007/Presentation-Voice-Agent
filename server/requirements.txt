@@ -2,7 +2,7 @@ fastapi~=0.115.14
 uvicorn~=0.35.0
 python-dotenv~=1.1.1
 loguru~=0.7.3
-pipecat-ai[silero,deepgram,cartesia,openai,websocket]==0.0.98
+pipecat-ai[silero,deepgram,cartesia,openai,websocket,azure]==0.0.98
 
 # Full-product additions (upload -> ingestion -> viewer)
 pydantic-settings~=2.6

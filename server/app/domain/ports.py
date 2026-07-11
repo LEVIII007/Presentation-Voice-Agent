@@ -10,7 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from .models import Deck, DeckStatus, DeckSynthesis, Slide, SlideNarration, SlideStatus
+from .models import (
+    Deck,
+    DeckStatus,
+    DeckSynthesis,
+    QAExtraction,
+    Slide,
+    SlideNarration,
+    SlideStatus,
+)
 
 
 class DeckRepo(Protocol):
@@ -35,6 +43,8 @@ class DeckRepo(Protocol):
         slide_count: Optional[int] = None,
         intro: Optional[str] = None,
         outro: Optional[str] = None,
+        persona: Optional[str] = None,
+        persona_override: Optional[str] = None,
     ) -> None: ...
 
     async def ensure_slides(self, deck_id: str, count: int) -> None:
@@ -116,3 +126,10 @@ class TTSFactory(Protocol):
 
 class LLMFactory(Protocol):
     def create(self) -> Any: ...  # a pipecat LLM service
+
+
+class QAExtractor(Protocol):
+    async def extract(self, *, utterance: str, reply: str) -> Optional[QAExtraction]:
+        """Turn one raw (audience utterance, presenter reply) pair into a clean
+        Q&A log entry, or None if the utterance was not a genuine question."""
+        ...

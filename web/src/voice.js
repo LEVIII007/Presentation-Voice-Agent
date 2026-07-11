@@ -5,12 +5,32 @@ import { RTVIClient, RTVIEvent, RTVIMessage } from "@pipecat-ai/client-js";
 import { WebSocketTransport } from "@pipecat-ai/websocket-transport";
 
 import { BACKEND_URL } from "./api.js";
+import { createPresentationFlowMessage, createRtviClientMessage } from "./rtvi-messages.js";
 
 function parseServerMessage(message) {
   if (message && message.data && message.data.message_type) return message.data;
   if (message && message.message_type) return message;
   if (message && message.type === "server-message" && message.data) return message.data;
   return null;
+}
+
+function humanizeErrorMessage(message) {
+  if (!message) return "Unknown error";
+  if (/http 402/i.test(message)) {
+    return "The configured speech provider rejected the connection with HTTP 402. Check that provider's billing or credits, or switch TTS providers in the server config.";
+  }
+  return message;
+}
+
+function formatRtviError(err) {
+  const dataError = err && err.data && typeof err.data.error === "string" ? err.data.error : "";
+  const message = dataError || (typeof err?.message === "string" ? err.message : "") || (typeof err === "string" ? err : "");
+  if (message) return humanizeErrorMessage(message);
+  try {
+    return humanizeErrorMessage(JSON.stringify(err));
+  } catch {
+    return humanizeErrorMessage(String(err));
+  }
 }
 
 // Keep the caption to roughly its last two lines: once the utterance outgrows
@@ -23,9 +43,10 @@ function captionTail(text) {
 }
 
 // States reported via onStatus: connecting | connected | speaking | listening | thinking | offline | error
-export function createVoiceSession({ deckId, enableMic = true, onStatus, onCaption, onSlide, onConnected, onDisconnected }) {
+export function createVoiceSession({ deckId, enableMic = true, onStatus, onCaption, onSlide, onConnected, onDisconnected, onQaLogged }) {
   let client = null;
   let connected = false;
+  let terminalError = false;
 
   function sendTextMessage(content, options = { run_immediately: true, audio_response: true }) {
     if (!client || !connected) return false;
@@ -46,6 +67,7 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
       enableCam: false,
       callbacks: {
         onConnected: () => {
+          terminalError = false;
           connected = true;
           onConnected && onConnected();
           onStatus("connected", "Listening");
@@ -53,7 +75,7 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
         },
         onDisconnected: () => {
           connected = false;
-          onStatus("offline", "Session ended");
+          if (!terminalError) onStatus("offline", "Session ended");
           onDisconnected && onDisconnected();
         },
         onServerMessage: (message) => {
@@ -61,10 +83,17 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
           if (!data) return;
           if (data.message_type === "go_to_slide" && typeof data.slide === "number") {
             onSlide(data.slide);
+          } else if (data.message_type === "qa_logged" && data.entry) {
+            onQaLogged && onQaLogged(data.entry);
+          } else if (data.message_type === "session_error" && data.message) {
+            terminalError = true;
+            onStatus("error", "Speech unavailable");
+            onCaption(data.message);
           }
         },
         onError: (err) => {
-          const msg = typeof err === "object" ? JSON.stringify(err) : String(err);
+          const msg = formatRtviError(err);
+          terminalError = true;
           onStatus("error", "Error");
           onCaption(`Error: ${msg}`);
           console.error("RTVI error:", err);
@@ -124,6 +153,12 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   // go_to_slide, exactly like a spoken question.
   function sendText(text) {
     sendTextMessage(text, { run_immediately: true, audio_response: true });
+    // A typed question has no STT transcript for the server to catch, so tell it
+    // explicitly to log this as an audience question (spoken ones are detected
+    // server-side). The presenter's answer is paired to it on the backend.
+    if (client && connected) {
+      client.sendMessage(createRtviClientMessage("qa-question", { text }));
+    }
   }
 
   // Manual slide jump -> silently tell the agent so its mental model of "the
@@ -133,6 +168,12 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
       `(System note, not spoken aloud: the audience is now looking at slide ${n}${title ? `, titled "${title}"` : ""}. Treat that slide as the visual context for follow-up questions from here unless you choose to go_to_slide elsewhere. Use that slide number if you later need to inspect its image. Do not announce this note.)`,
       { run_immediately: false, audio_response: false },
     );
+    // Also sync the server's own notion of the current slide, so transcript
+    // slide tags and image lookups stay truthful (the note above only informs
+    // the model).
+    if (client && connected) {
+      client.sendMessage(createRtviClientMessage("manual-slide", { slide: n }));
+    }
   }
 
   // Pause / resume go straight to the live session as a control command, not
@@ -143,7 +184,7 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   function setPresentationFlow(action) {
     if (action !== "pause" && action !== "resume") return false;
     if (!client || !connected) return false;
-    client.sendMessage(new RTVIMessage("client-message", { t: "presentation-flow", d: { action } }));
+    client.sendMessage(createPresentationFlowMessage(action));
     return true;
   }
 
