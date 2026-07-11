@@ -32,6 +32,11 @@ class IngestionWorker:
             if deck.status in (DeckStatus.UPLOADED, DeckStatus.PROCESSING):
                 logger.info(f"Recovering unfinished deck {deck.id} ({deck.status})")
                 self.enqueue(deck.id)
+            elif deck.status == DeckStatus.READY and not deck.intro:
+                # Decks narrated before the synthesis stage existed: backfill
+                # their intro/transitions (ingest() short-circuits to that).
+                logger.info(f"Backfilling synthesis for deck {deck.id}")
+                self.enqueue(deck.id)
         self._task = asyncio.create_task(self._run(), name="ingestion-worker")
 
     def enqueue(self, deck_id: str) -> None:

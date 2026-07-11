@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Server
     port: int = 7860
     public_url: str = ""  # e.g. https://demo.example.com when behind a domain
+    voice_always_show_slide_image: bool = False  # rollback to eager per-turn slide images
 
     # Storage
     data_dir: Path = Path("data")

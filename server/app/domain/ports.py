@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from .models import Deck, DeckStatus, Slide, SlideNarration, SlideStatus
+from .models import Deck, DeckStatus, DeckSynthesis, Slide, SlideNarration, SlideStatus
 
 
 class DeckRepo(Protocol):
@@ -33,6 +33,8 @@ class DeckRepo(Protocol):
         title: Optional[str] = None,
         pdf_path: Optional[str] = None,
         slide_count: Optional[int] = None,
+        intro: Optional[str] = None,
+        outro: Optional[str] = None,
     ) -> None: ...
 
     async def ensure_slides(self, deck_id: str, count: int) -> None:
@@ -51,6 +53,7 @@ class DeckRepo(Protocol):
         title: Optional[str] = None,
         bullets: Optional[list[str]] = None,
         notes: Optional[str] = None,
+        transition: Optional[str] = None,
         image_path: Optional[str] = None,
         status: Optional[SlideStatus] = None,
         error: Optional[str] = None,
@@ -97,6 +100,10 @@ class NarrationModel(Protocol):
         slide_number: int,
         slide_total: int,
     ) -> SlideNarration: ...
+
+    async def synthesize_deck(self, deck: Deck) -> DeckSynthesis:
+        """One pass over all narrated slides -> intro, transitions, outro."""
+        ...
 
 
 class STTFactory(Protocol):

@@ -76,6 +76,7 @@ async def build_container(settings: Settings) -> Container:
         sessions=sessions,
         manager=manager,
         latency=latency,
+        always_show_slide_image=settings.voice_always_show_slide_image,
     )
 
     return Container(

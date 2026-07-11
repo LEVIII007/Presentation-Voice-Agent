@@ -11,3 +11,5 @@ web/.vite/
 
 # OS
 .DS_Store
+
+server/data/*

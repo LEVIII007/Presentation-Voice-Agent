@@ -1,4 +1,13 @@
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:7860";
+function resolveBackendUrl() {
+  const configured = import.meta.env.VITE_BACKEND_URL?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "http://localhost:7860";
+}
+
+export const BACKEND_URL = resolveBackendUrl();
 
 async function request(method, path, body) {
   const opts = { method, headers: {} };

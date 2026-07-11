@@ -1,6 +1,7 @@
 import "./styles.css";
 
 import { renderDashboard } from "./views/dashboard.js";
+import { renderLatency } from "./views/latency.js";
 import { renderProcessing } from "./views/processing.js";
 import { renderReview } from "./views/review.js";
 import { renderViewer } from "./views/viewer.js";
@@ -25,6 +26,8 @@ async function route() {
   try {
     if (parts.length === 0) {
       disposeCurrent = await renderDashboard();
+    } else if (parts[0] === "latency") {
+      disposeCurrent = await renderLatency();
     } else if (parts[0] === "present" && parts[1]) {
       disposeCurrent = await renderViewer(parts[1]);
     } else if (parts[0] === "deck" && parts[1]) {

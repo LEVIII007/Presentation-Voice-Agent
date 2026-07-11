@@ -45,6 +45,7 @@ async def connect(request: Request, deck_id: str = Query(...), c=Depends(get_con
         host_part = public_url.split("://", 1)[-1]
         ws_url = f"{scheme}://{host_part}/ws/{deck_id}"
     else:
-        host = request.url.hostname or "localhost"
-        ws_url = f"ws://{host}:{c.settings.port}/ws/{deck_id}"
+        scheme = "wss" if request.url.scheme == "https" else "ws"
+        host = request.headers.get("host") or request.url.netloc or "localhost"
+        ws_url = f"{scheme}://{host}/ws/{deck_id}"
     return {"ws_url": ws_url}

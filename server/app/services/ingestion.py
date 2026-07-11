@@ -39,6 +39,11 @@ class IngestionService:
             logger.warning(f"ingest: deck {deck_id} not found")
             return
         if deck.status == DeckStatus.READY:
+            # Backfill: decks narrated before the synthesis stage (or before the
+            # persona field) existed get their intro/transitions/outro/persona
+            # without a full re-ingest.
+            if not deck.intro or not deck.persona:
+                await self._synthesize(deck_id)
             return
         try:
             await self._run(deck)
@@ -94,8 +99,35 @@ class IngestionService:
         first = slides[0] if slides else None
         if first and first.title and first.status == SlideStatus.READY:
             await self._repo.update_deck(deck.id, title=first.title)
+
+        # Stage 4: deck-level synthesis — intro, per-slide transitions, outro.
+        # Best-effort: a deck without connective tissue is still presentable.
+        await self._synthesize(deck.id)
+
         await self._repo.set_deck_status(deck.id, DeckStatus.READY)
         logger.info(f"Deck {deck.id} ready ({len(slides)} slides, {len(failed)} degraded)")
+
+    async def _synthesize(self, deck_id: str) -> None:
+        deck = await self._repo.get_deck(deck_id, with_slides=True)
+        if deck is None or not deck.slides:
+            return
+        try:
+            synthesis = await self._narrator.synthesize_deck(deck)
+        except Exception:
+            logger.exception(f"Deck synthesis failed for {deck_id}; presenting without it")
+            return
+        await self._repo.update_deck(
+            deck_id,
+            intro=synthesis.intro,
+            outro=synthesis.outro,
+            persona=synthesis.persona,
+        )
+        for n, text in synthesis.transitions.items():
+            if text and 1 < n <= len(deck.slides):
+                await self._repo.update_slide(deck_id, n, transition=text)
+        logger.info(
+            f"Deck {deck_id} synthesized: intro + {len(synthesis.transitions)} transitions"
+        )
 
     async def _process_slide(
         self,

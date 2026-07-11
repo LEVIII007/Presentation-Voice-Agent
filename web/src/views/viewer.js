@@ -4,7 +4,7 @@
 // mic priming, thinking indicator, and an end screen with the creator CTA.
 
 import { api, escapeHtml } from "../api.js";
-import { h, mount, navigate, toast } from "../dom.js";
+import { h, mount, toast } from "../dom.js";
 import { createVoiceSession } from "../voice.js";
 
 const STARTERS = ["Give me the overview", "What's the most important point?", "Summarize this in one line"];
@@ -12,6 +12,7 @@ const STARTERS = ["Give me the overview", "What's the most important point?", "S
 const STATUS_TEXT = {
   connecting: "Connecting…",
   connected: "Listening",
+  paused: "Paused",
   speaking: "Presenter speaking",
   listening: "You're speaking",
   thinking: "Thinking…",
@@ -40,8 +41,12 @@ export async function renderViewer(deckId) {
   const total = slides.length;
   let current = 1;
   let captionsOn = true;
+  let presentationPaused = false;
+  let flowBusy = false;
   let session = null;
   let cleanup = () => {};
+  let statusState = "offline";
+  let statusLabel = STATUS_TEXT.offline;
 
   // --- Elements ---
   const rail = h("div", { class: "rail" });
@@ -51,7 +56,11 @@ export async function renderViewer(deckId) {
   const breadcrumb = h("div", { class: "nav-breadcrumb" }, "");
   const prevBtn = h("button", { class: "stage-nav prev", title: "Previous slide", onClick: () => go(current - 1, true) }, "‹");
   const nextBtn = h("button", { class: "stage-nav next", title: "Next slide", onClick: () => go(current + 1, true) }, "›");
-  const stage = h("div", { class: "stage" }, prevBtn, breadcrumb, stageInner, nextBtn);
+  const stageFlowBtn = h("button", { class: "btn ghost stage-action stage-flow", type: "button", onClick: togglePresentationFlow }, "Pause");
+  const stageStopBtn = h("button", { class: "btn danger stage-action stage-stop", type: "button", onClick: stopSession }, "Stop");
+  const stageActions = h("div", { class: "stage-actions" }, stageFlowBtn, stageStopBtn);
+  stageActions.hidden = true;
+  const stage = h("div", { class: "stage" }, prevBtn, breadcrumb, stageInner, nextBtn, stageActions);
 
   const statusPill = h("span", { class: "pill" }, h("span", { class: "dot" }), h("span", { id: "st-text" }, "Offline"));
   const caption = h("div", { class: "caption" }, "Press Start and allow the microphone to begin — or type your question below.");
@@ -125,13 +134,36 @@ export async function renderViewer(deckId) {
     showBreadcrumb._t = setTimeout(() => breadcrumb.classList.remove("show"), 2200);
   }
 
-  function setStatus(state, text) {
+  function renderStatus() {
+    let state = statusState;
+    let text = statusLabel || STATUS_TEXT[state] || "";
+    if (presentationPaused && state === "connected") {
+      state = "paused";
+      text = STATUS_TEXT.paused;
+    }
     statusPill.className = `pill ${state}${["speaking", "listening", "thinking", "connected"].includes(state) ? " live" : ""}`;
-    document.getElementById("st-text").textContent = text || STATUS_TEXT[state] || "";
+    document.getElementById("st-text").textContent = text;
+  }
+
+  function setStatus(state, text) {
+    statusState = state;
+    statusLabel = text || STATUS_TEXT[state] || "";
+    renderStatus();
   }
 
   function setCaption(html) {
     if (captionsOn) caption.innerHTML = html;
+  }
+
+  function syncSessionControls({ live = false, busy = false } = {}) {
+    startBtn.disabled = busy;
+    startBtn.textContent = live ? "■ End presentation" : "▶ Start presentation";
+    startBtn.classList.toggle("live", live);
+    stageActions.hidden = !live;
+    stageStopBtn.disabled = busy || flowBusy;
+    stageFlowBtn.disabled = busy || flowBusy;
+    stageFlowBtn.textContent = presentationPaused ? "Resume" : "Pause";
+    stageFlowBtn.classList.toggle("paused", presentationPaused);
   }
 
   function ask(text) {
@@ -147,39 +179,95 @@ export async function renderViewer(deckId) {
   // --- Connect / disconnect ---
   async function toggleConnect() {
     if (session && session.connected) {
-      await session.disconnect();
+      await stopSession();
       return;
     }
     await startSession(true);
   }
 
+  async function togglePresentationFlow() {
+    if (!session || !session.connected || flowBusy) return;
+    const action = presentationPaused ? "resume" : "pause";
+    const nextPaused = action === "pause";
+    flowBusy = true;
+    syncSessionControls({ live: true });
+    try {
+      const sent = session.setPresentationFlow(action);
+      if (!sent) throw new Error(`Could not ${action} the presentation right now.`);
+      presentationPaused = nextPaused;
+      renderStatus();
+      setCaption(
+        presentationPaused
+          ? "Presentation paused. Ask a question or resume when you're ready."
+          : "Presentation resumed. It will continue from where it left off.",
+      );
+    } catch (e) {
+      setCaption(`Could not ${action} the presentation: ${String(e?.message || e)}`);
+      toast(`Could not ${action} the presentation. Please try again.`, "error");
+      console.error(e);
+    } finally {
+      flowBusy = false;
+      syncSessionControls({ live: !!(session && session.connected) });
+    }
+  }
+
+  async function stopSession() {
+    if (!session || !session.connected) return;
+    presentationPaused = false;
+    flowBusy = false;
+    syncSessionControls({ live: true, busy: true });
+    try {
+      await session.disconnect();
+    } catch (e) {
+      session = null;
+      syncSessionControls();
+      setStatus("error", "Error");
+      setCaption(`Could not end the presentation: ${String(e?.message || e)}`);
+      console.error(e);
+      return;
+    }
+
+    if (session && !session.connected) {
+      session = null;
+      syncSessionControls();
+      showEndScreen();
+    }
+  }
+
   async function startSession(withMic) {
-    startBtn.disabled = true;
+    stage.querySelector(".overlay")?.remove();
+    presentationPaused = false;
+    flowBusy = false;
+    syncSessionControls({ busy: true });
     setStatus("connecting", "Connecting…");
     setCaption(withMic ? "Requesting microphone…" : "Connecting (text-only)…");
 
     session = createVoiceSession({
       deckId,
       enableMic: withMic,
+      onConnected: () => {
+        syncSessionControls({ live: true });
+      },
       onStatus: setStatus,
       onCaption: setCaption,
       onSlide: (n) => { renderSlide(n); showBreadcrumb("Moved here from your question"); },
       onDisconnected: () => {
-        startBtn.disabled = false;
-        startBtn.textContent = "▶ Start presentation";
-        startBtn.classList.remove("live");
+        presentationPaused = false;
+        flowBusy = false;
+        session = null;
+        syncSessionControls();
         showEndScreen();
       },
     });
 
     try {
       await session.connect();
-      startBtn.disabled = false;
-      startBtn.textContent = "■ End presentation";
-      startBtn.classList.add("live");
+      syncSessionControls({ live: true });
     } catch (e) {
-      startBtn.disabled = false;
+      presentationPaused = false;
+      flowBusy = false;
       session = null;
+      syncSessionControls();
       const msg = String(e?.message || e);
       const micIssue = /permission|microphone|notallowed|denied|getusermedia/i.test(msg);
       if (withMic && micIssue) {

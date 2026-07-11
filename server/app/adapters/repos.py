@@ -29,6 +29,9 @@ def _deck_from_row(row: DeckRow) -> Deck:
         status=DeckStatus(row.status),
         error=row.error,
         slide_count=row.slide_count,
+        intro=row.intro or "",
+        outro=row.outro or "",
+        persona=row.persona or "",
         created_at=row.created_at,
     )
 
@@ -39,6 +42,7 @@ def _slide_from_row(row: SlideRow) -> Slide:
         title=row.title,
         bullets=json.loads(row.bullets or "[]"),
         notes=row.notes,
+        transition=row.transition or "",
         image_path=row.image_path,
         status=SlideStatus(row.status),
         error=row.error,
@@ -105,6 +109,9 @@ class SqlDeckRepo:
         title: Optional[str] = None,
         pdf_path: Optional[str] = None,
         slide_count: Optional[int] = None,
+        intro: Optional[str] = None,
+        outro: Optional[str] = None,
+        persona: Optional[str] = None,
     ) -> None:
         values: dict[str, Any] = {}
         if title is not None:
@@ -113,6 +120,12 @@ class SqlDeckRepo:
             values["pdf_path"] = pdf_path
         if slide_count is not None:
             values["slide_count"] = slide_count
+        if intro is not None:
+            values["intro"] = intro
+        if outro is not None:
+            values["outro"] = outro
+        if persona is not None:
+            values["persona"] = persona
         if not values:
             return
         async with self._sf() as s:
@@ -148,6 +161,7 @@ class SqlDeckRepo:
                         title=sl.title,
                         bullets=json.dumps(sl.bullets),
                         notes=sl.notes,
+                        transition=sl.transition,
                         image_path=sl.image_path,
                         status=sl.status.value,
                         error=sl.error,
@@ -174,6 +188,7 @@ class SqlDeckRepo:
         title: Optional[str] = None,
         bullets: Optional[list[str]] = None,
         notes: Optional[str] = None,
+        transition: Optional[str] = None,
         image_path: Optional[str] = None,
         status: Optional[SlideStatus] = None,
         error: Optional[str] = None,
@@ -185,6 +200,8 @@ class SqlDeckRepo:
             values["bullets"] = json.dumps(bullets)
         if notes is not None:
             values["notes"] = notes
+        if transition is not None:
+            values["transition"] = transition
         if image_path is not None:
             values["image_path"] = image_path
         if status is not None:

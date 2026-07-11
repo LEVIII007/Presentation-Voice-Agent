@@ -1,0 +1,19 @@
+services:
+  voice-slides:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: ./server/.env
+        required: false
+    environment:
+      PORT: 5173
+      DATA_DIR: /app/server/data
+    ports:
+      - "${VOICE_SLIDES_PORT:-5173}:5173"
+    volumes:
+      - voice_slides_data:/app/server/data
+    restart: unless-stopped
+
+volumes:
+  voice_slides_data:

@@ -28,6 +28,7 @@ class Slide:
     title: str = ""
     bullets: list[str] = field(default_factory=list)
     notes: str = ""
+    transition: str = ""  # spoken one-liner bridging from the previous slide
     image_path: Optional[str] = None
     status: SlideStatus = SlideStatus.PENDING
     error: Optional[str] = None
@@ -43,6 +44,9 @@ class Deck:
     status: DeckStatus = DeckStatus.UPLOADED
     error: Optional[str] = None
     slide_count: int = 0
+    intro: str = ""  # spoken welcome + agenda, generated after narration
+    outro: str = ""  # spoken closing summary
+    persona: str = ""  # who the presenter speaks as + tone, inferred from the deck's domain
     created_at: Optional[datetime] = None
     slides: list[Slide] = field(default_factory=list)
 
@@ -53,3 +57,13 @@ class SlideNarration:
 
     title: str
     notes: str
+
+
+@dataclass
+class DeckSynthesis:
+    """Deck-level connective tissue, produced in one pass over all notes."""
+
+    intro: str
+    outro: str
+    transitions: dict[int, str]  # slide number -> spoken bridge into that slide
+    persona: str = ""  # role + tone direction for the live presenter, not spoken aloud

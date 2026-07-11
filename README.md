@@ -109,6 +109,22 @@ npm run dev                   # http://localhost:5173
 Open http://localhost:5173, upload a deck (or open the seeded EV deck), watch it
 process, review the narration, then **Present** and talk.
 
+### Docker (one command)
+
+The container builds the Vite app, serves the built frontend from FastAPI, runs
+the API + voice WebSocket in the same process, and exposes a single browser port.
+
+1. Copy `server/.env.example` to `server/.env` and fill in your vendor keys.
+2. Start everything:
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:5173. Deck data persists in the `voice_slides_data`
+Docker volume, and you can change the host port with
+`VOICE_SLIDES_PORT=8080 docker compose up --build`.
+
 ## API
 
 | Method | Path | Purpose |

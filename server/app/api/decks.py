@@ -29,6 +29,8 @@ def _deck_dict(deck: Deck) -> dict:
         "status": deck.status.value,
         "error": deck.error,
         "slide_count": deck.slide_count,
+        "intro": deck.intro,
+        "outro": deck.outro,
         "created_at": deck.created_at.isoformat() if deck.created_at else None,
     }
 
@@ -39,6 +41,7 @@ def _slide_dict(s: Slide) -> dict:
         "title": s.title,
         "bullets": s.bullets,
         "notes": s.notes,
+        "transition": s.transition,
         "status": s.status.value,
         "error": s.error,
         "has_image": bool(s.image_path),

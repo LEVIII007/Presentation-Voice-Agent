@@ -37,6 +37,9 @@ class DeckRow(Base):
     status: Mapped[str] = mapped_column(String(20), default="uploaded", index=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     slide_count: Mapped[int] = mapped_column(Integer, default=0)
+    intro: Mapped[str] = mapped_column(Text, default="")
+    outro: Mapped[str] = mapped_column(Text, default="")
+    persona: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -50,6 +53,7 @@ class SlideRow(Base):
     title: Mapped[str] = mapped_column(String(300), default="")
     bullets: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     notes: Mapped[str] = mapped_column(Text, default="")
+    transition: Mapped[str] = mapped_column(Text, default="")
     image_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -66,8 +70,27 @@ class SessionRow(Base):
     events: Mapped[str] = mapped_column(Text, default="[]")  # JSON
 
 
+# Columns added after the first release. create_all() only creates missing
+# tables, so pre-existing SQLite files need these bolted on at startup.
+_MIGRATIONS = [
+    ("decks", "intro", "TEXT NOT NULL DEFAULT ''"),
+    ("decks", "outro", "TEXT NOT NULL DEFAULT ''"),
+    ("decks", "persona", "TEXT NOT NULL DEFAULT ''"),
+    ("slides", "transition", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _migrate_sqlite(conn) -> None:
+    for table, column, ddl in _MIGRATIONS:
+        existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 async def make_engine(database_url: str) -> tuple[AsyncEngine, async_sessionmaker]:
     engine = create_async_engine(database_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if database_url.startswith("sqlite"):
+            await conn.run_sync(_migrate_sqlite)
     return engine, async_sessionmaker(engine, expire_on_commit=False)

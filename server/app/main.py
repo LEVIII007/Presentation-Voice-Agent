@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 load_dotenv()
 
-from .api import decks, system
+from .api import decks, latency, system
 from .core.container import build_container
 from .core.settings import Settings
 from .seed import seed_demo_deck
@@ -51,6 +53,7 @@ app.add_middleware(
 )
 
 app.include_router(system.router)
+app.include_router(latency.router)
 app.include_router(decks.router)
 
 
@@ -65,6 +68,13 @@ async def websocket_endpoint(websocket: WebSocket, deck_id: str):
         logger.info("WebSocket client disconnected")
     except Exception as e:  # keep one bad session from killing the server
         logger.exception(f"Session error: {e}")
+
+
+frontend_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+else:
+    logger.warning(f"Frontend dist not found at {frontend_dist}; serving API only")
 
 
 if __name__ == "__main__":

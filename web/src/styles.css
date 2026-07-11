@@ -115,6 +115,7 @@ a:hover { color: var(--accent-2); }
 .pill.ready { background: rgba(53,198,107,0.14); color: var(--good); }
 .pill.processing { background: rgba(240,180,41,0.14); color: var(--warn); }
 .pill.uploaded { background: rgba(240,180,41,0.14); color: var(--warn); }
+.pill.paused { background: rgba(240,180,41,0.14); color: var(--warn); }
 .pill.failed { background: rgba(255,107,107,0.14); color: var(--bad); }
 .pill.live .dot { animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -207,11 +208,30 @@ a:hover { color: var(--accent-2); }
 .stage-nav:hover { border-color: var(--faint); }
 .stage-nav.prev { left: 16px; }
 .stage-nav.next { right: 16px; }
+.stage-actions {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+}
+.stage-actions[hidden] { display: none; }
+.stage-action {
+  padding: 9px 16px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+}
+.stage-flow.paused {
+  background: rgba(240,180,41,0.12);
+  border-color: rgba(240,180,41,0.45);
+  color: #ffd27a;
+}
 
 .dock { grid-column: 2; border-top: 1px solid var(--edge); padding: 16px 24px 22px; display: flex; flex-direction: column; align-items: center; gap: 12px; background: var(--bg-2); }
 .dock-status { display: flex; align-items: center; gap: 10px; }
-.caption { min-height: 22px; font-size: 14px; color: var(--muted); text-align: center; max-width: 760px; }
-.caption b { color: var(--text); font-weight: 600; }
+.caption { min-height: 50px; font-size: 17px; font-weight: 600; line-height: 1.45; color: var(--text); text-align: center; max-width: 760px; }
+.caption b { color: var(--accent); font-weight: 700; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .chip { font-size: 13px; background: var(--card-2); border: 1px solid var(--edge); color: var(--text); border-radius: 999px; padding: 7px 14px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .chip:hover { border-color: var(--accent); background: rgba(77,166,255,0.08); }
@@ -261,4 +281,6 @@ a:hover { color: var(--accent-2); }
   .slide-bullets li { font-size: 17px; }
   .review-row { grid-template-columns: 1fr; }
   .stage-nav { display: none; }
+  .stage-actions { top: 14px; right: 14px; gap: 8px; }
+  .stage-action { padding: 8px 14px; }
 }

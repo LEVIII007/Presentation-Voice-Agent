@@ -1,0 +1,136 @@
+.latency-page {
+  max-width: 1140px;
+}
+
+.latency-banner {
+  margin-bottom: 22px;
+}
+
+.latency-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.latency-session {
+  background: var(--card);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.latency-session-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.latency-session-head h3 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.latency-session-meta,
+.latency-session-counts {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.latency-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.latency-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.latency-stat-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.latency-chart {
+  background: linear-gradient(180deg, rgba(77, 166, 255, 0.05), rgba(77, 166, 255, 0));
+  border: 1px solid var(--edge);
+  border-radius: 16px;
+  padding: 10px;
+}
+
+.latency-chart-empty {
+  color: var(--muted);
+  padding: 28px 18px;
+  text-align: center;
+}
+
+.latency-svg {
+  width: 100%;
+  display: block;
+}
+
+.latency-grid {
+  stroke: rgba(139, 149, 165, 0.18);
+  stroke-width: 1;
+}
+
+.latency-grid-vertical {
+  stroke-dasharray: 4 6;
+}
+
+.latency-axis {
+  stroke: rgba(232, 236, 242, 0.28);
+  stroke-width: 1;
+}
+
+.latency-axis-text {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.latency-point {
+  transition: transform 0.12s ease;
+}
+
+.latency-point:hover {
+  transform: scale(1.15);
+}
+
+.latency-empty {
+  border: 1px dashed var(--edge-2);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+
+@media (max-width: 720px) {
+  .latency-session {
+    padding: 14px;
+  }
+
+  .latency-chart {
+    padding: 6px;
+  }
+
+  .latency-session-meta,
+  .latency-session-counts,
+  .latency-stat-pill {
+    font-size: 12px;
+  }
+}
