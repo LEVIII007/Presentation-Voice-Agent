@@ -1,9 +1,9 @@
 // The viewer — the live talkable deck. This is the shareable, mobile-friendly
 // screen. Renders each slide (image if ingested, else title+bullets), a slide
-// rail for manual nav, live captions, a typed-question fallback, mic priming,
-// thinking indicator, and an end screen with the creator CTA.
+// rail for manual nav, live captions, mic priming, thinking indicator, and an
+// end screen with the creator CTA.
 
-import { api, escapeHtml } from "../api.js";
+import { api } from "../api.js";
 import { h, mount, toast } from "../dom.js";
 import { createVoiceSession } from "../voice.js";
 
@@ -33,6 +33,39 @@ function controlNameEl(label) {
   return h("span", { class: "control-name" }, label);
 }
 
+const NO_SPACE_BEFORE_SEGMENT_RE = /^[,.;:!?%)\]}]/;
+const NO_SPACE_AFTER_SEGMENT_RE = /[(\[{'"“]$/;
+
+function needsSpaceBeforeSegment(previous, current) {
+  if (!previous || !current) return false;
+  if (NO_SPACE_BEFORE_SEGMENT_RE.test(current) || /^[’']/.test(current)) return false;
+  if (NO_SPACE_AFTER_SEGMENT_RE.test(previous)) return false;
+  return true;
+}
+
+function renderCaptionContent(content) {
+  const normalized = typeof content === "string" ? { text: content } : (content || {});
+  const line = h("div", { class: "caption-line" });
+  if (normalized.speaker) {
+    line.append(h("span", {
+      class: `caption-speaker ${normalized.speaker === "Presenter" ? "presenter" : "audience"}`,
+    }, `${normalized.speaker}:`));
+  }
+  if (Array.isArray(normalized.segments)) {
+    const words = h("span", { class: "caption-words" });
+    normalized.segments.forEach((segment, index) => {
+      if (needsSpaceBeforeSegment(normalized.segments[index - 1], segment)) words.append(" ");
+      words.append(h("span", {
+        class: `caption-word${index === normalized.activeIndex ? " active" : ""}`,
+      }, segment));
+    });
+    line.append(words);
+    return line;
+  }
+  line.append(h("span", { class: "caption-text" }, normalized.text || ""));
+  return line;
+}
+
 export async function renderViewer(deckId) {
   mount(h("div", { class: "page" }, h("div", { class: "spinner" })));
 
@@ -54,7 +87,7 @@ export async function renderViewer(deckId) {
   const total = slides.length;
   let current = 1;
   let captionsOn = true;
-  let latestCaption = "Press Start and allow the microphone to begin — or type your question below.";
+  let latestCaption = "Press Start and allow the microphone to begin, then just speak to interrupt or ask a question.";
   let presentationPaused = false;
   let flowBusy = false;
   let session = null;
@@ -89,10 +122,7 @@ export async function renderViewer(deckId) {
   const statusPill = h("div", { class: "control-status offline" },
     h("span", { class: "status-indicator-dot", "aria-hidden": "true" }),
     h("span", { id: "st-text", class: "status-label" }, "Offline"));
-  const caption = h("div", { class: "caption" }, latestCaption);
-  const textInput = h("input", { type: "text", placeholder: "Type a question…" });
-  const textForm = h("form", { class: "textbar", onSubmit: (e) => { e.preventDefault(); const v = textInput.value.trim(); if (v) { ask(v); textInput.value = ""; } } },
-    textInput, h("button", { class: "btn sm", type: "submit" }, "Send"));
+  const caption = h("div", { class: "caption" }, renderCaptionContent(latestCaption));
 
   const startIcon = iconEl("play");
   const startName = controlNameEl("Start");
@@ -113,9 +143,8 @@ export async function renderViewer(deckId) {
     onClick: toggleCaptions,
   }, capIcon, capName);
   const controls = h("div", { class: "control-panel" }, capToggle, stageFlowBtn, startBtn, statusPill);
-  const extraActions = h("div", { class: "dock-extra" });
   const dock = h("div", { class: "dock" },
-    caption, textForm, controls, extraActions,
+    caption, controls,
     h("div", { class: "hint", style: "font-size:12px;color:var(--faint)" }, "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo."),
   );
   syncCaptionsControl();
@@ -246,9 +275,15 @@ export async function renderViewer(deckId) {
     renderStatus();
   }
 
-  function setCaption(html) {
-    latestCaption = html;
-    if (captionsOn) caption.innerHTML = html;
+  function setCaption(content) {
+    latestCaption = content;
+    renderCaption();
+  }
+
+  function renderCaption() {
+    caption.replaceChildren();
+    if (!captionsOn) return;
+    caption.append(renderCaptionContent(latestCaption));
   }
 
   function syncCaptionsControl() {
@@ -261,7 +296,7 @@ export async function renderViewer(deckId) {
   function toggleCaptions() {
     captionsOn = !captionsOn;
     syncCaptionsControl();
-    caption.innerHTML = captionsOn ? latestCaption : "";
+    renderCaption();
   }
 
   function syncSessionControls({ live = false, busy = false } = {}) {
@@ -280,23 +315,13 @@ export async function renderViewer(deckId) {
     stageFlowBtn.classList.toggle("paused", presentationPaused);
   }
 
-  function ask(text) {
-    if (!session || !session.connected) {
-      toast("Press Start first to ask by voice or text", "info");
-      return;
-    }
-    setCaption(`<b>You:</b> ${escapeHtml(text)}`);
-    setStatus("thinking", "Thinking…");
-    session.sendText(text);
-  }
-
   // --- Connect / disconnect ---
   async function toggleConnect() {
     if (session && session.connected) {
       await stopSession();
       return;
     }
-    await startSession(true);
+    await startSession();
   }
 
   async function togglePresentationFlow() {
@@ -312,7 +337,7 @@ export async function renderViewer(deckId) {
       renderStatus();
       setCaption(
         presentationPaused
-          ? "Presentation paused. Ask a question or resume when you're ready."
+          ? "Presentation paused. Speak to ask a question, or resume when you're ready."
           : "Presentation resumed. It will continue from where it left off.",
       );
     } catch (e) {
@@ -348,17 +373,17 @@ export async function renderViewer(deckId) {
     }
   }
 
-  async function startSession(withMic) {
+  async function startSession() {
     stage.querySelector(".overlay")?.remove();
     presentationPaused = false;
     flowBusy = false;
     syncSessionControls({ busy: true });
     setStatus("connecting", "Connecting…");
-    setCaption(withMic ? "Requesting microphone…" : "Connecting (text-only)…");
+    setCaption("Requesting microphone…");
 
     session = createVoiceSession({
       deckId,
-      enableMic: withMic,
+      enableMic: true,
       onConnected: () => {
         syncSessionControls({ live: true });
       },
@@ -385,22 +410,16 @@ export async function renderViewer(deckId) {
       syncSessionControls();
       const msg = String(e?.message || e);
       const micIssue = /permission|microphone|notallowed|denied|getusermedia/i.test(msg);
-      if (withMic && micIssue) {
+      if (micIssue) {
         setStatus("error", "Mic blocked");
-        setCaption("Microphone blocked. You can still present with typed questions.");
-        offerTextOnly();
+        setCaption("Microphone access is required to ask questions and interrupt the presenter. Allow the mic and press Start again.");
+        toast("Microphone access is required for live Q&A.", "error");
       } else {
         setStatus("error", "Error");
         setCaption(`Could not connect: ${msg}`);
       }
       console.error(e);
     }
-  }
-
-  function offerTextOnly() {
-    if (document.getElementById("text-only-btn")) return;
-    const btn = h("button", { id: "text-only-btn", class: "btn ghost text-only-btn", type: "button", onClick: () => { btn.remove(); startSession(false); } }, "Continue without mic");
-    extraActions.append(btn);
   }
 
   function showEndScreen() {
@@ -410,7 +429,7 @@ export async function renderViewer(deckId) {
         h("h3", {}, "Thanks for watching"),
         h("p", {}, `That's the end of "${deck.title}". Want to run it again, or reach out to the creator?`),
         h("div", { style: "display:flex;gap:10px;justify-content:center;flex-wrap:wrap" },
-          h("button", { class: "btn", onClick: () => { overlay.remove(); go(1); startSession(true); } }, "▶ Start again"),
+          h("button", { class: "btn", onClick: () => { overlay.remove(); go(1); startSession(); } }, "▶ Start again"),
           h("a", { class: "btn ghost", href: "mailto:?subject=About your presentation" }, "Contact / book a call"),
           h("a", { class: "btn ghost", href: "#/" }, "All decks"),
         ),

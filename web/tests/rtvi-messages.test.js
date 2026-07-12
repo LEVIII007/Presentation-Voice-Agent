@@ -17,11 +17,11 @@ test("presentation flow messages use the client-message envelope", () => {
 });
 
 test("custom browser messages preserve their inner type and payload", () => {
-  const message = createRtviClientEnvelope("qa-question", { text: "What changed?" });
+  const message = createRtviClientEnvelope("manual-slide", { slide: 7 });
 
   assert.equal(message.type, "client-message");
   assert.deepEqual(message.data, {
-    t: "qa-question",
-    d: { text: "What changed?" },
+    t: "manual-slide",
+    d: { slide: 7 },
   });
 });

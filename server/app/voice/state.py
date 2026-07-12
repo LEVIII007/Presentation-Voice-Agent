@@ -187,11 +187,6 @@ class PresentationState:
         self.interrupted_slide = None
         self.interrupted_remainder = ""
 
-    def release_narration(self) -> None:
-        """A typed question has no VAD speech-start; release the narration
-        claim so the answer turn is never mistaken for slide narration."""
-        self.narrating_slide = None
-
     # --- button pause/resume replay ---
 
     def capture_pause(self, *, bot_speaking: bool, full_text: str, spoken_text: str) -> str:
@@ -212,11 +207,13 @@ class PresentationState:
 
     # --- Q&A pairing ---
 
-    def qa_open(self, question: str, slide: int) -> None:
+    def qa_open(self, question: str, slide: int, history: list[dict] | None = None) -> None:
         q = (question or "").strip()
         if not q:
             return
-        self.qa_pending = {"question": q, "ask_slide": slide}
+        # `history` is a snapshot of the recent conversation, carried through to
+        # the extractor so it can judge intent in context (see qa_take_closable).
+        self.qa_pending = {"question": q, "ask_slide": slide, "history": history or []}
         self.qa_answering = True
         self.qa_answer_started = False
 

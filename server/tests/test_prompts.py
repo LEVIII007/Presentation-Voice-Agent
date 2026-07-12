@@ -39,18 +39,19 @@ def test_eager_prompt_preserves_current_slide_image_wording():
     print("ok: eager prompt preserves current-slide image wording")
 
 
-def test_kickoff_cue_only_delivers_opening():
+def test_kickoff_cue_lets_model_decide_on_slide_1():
     cue = build_kickoff_cue()
-    assert "opening only" in cue
-    assert "Do not present slide 1 yet" in cue
-    print("ok: kickoff cue keeps slide 1 for the interruptible flow")
+    assert "title, agenda, or cover slide" in cue
+    assert "go_to_slide with slide_number 1 and reason 'navigation'" in cue
+    assert "opening only" in cue  # still the fallback when slide 1 is real content
+    print("ok: kickoff cue lets the model merge or defer slide 1 based on its content")
 
 
 def test_prompt_uses_generated_persona_when_no_override():
     deck = _deck()
     deck.persona = "An experienced operator who explains tradeoffs clearly and stays grounded."
     prompt = build_system_prompt(deck)
-    assert "WHO YOU ARE: An experienced operator who explains tradeoffs clearly and stays grounded." in prompt
+    assert "<persona>\nAn experienced operator who explains tradeoffs clearly and stays grounded." in prompt
     print("ok: generated persona is used by default")
 
 
@@ -59,15 +60,43 @@ def test_prompt_prefers_user_persona_override():
     deck.persona = "A polished consultant with boardroom language."
     deck.persona_override = "A friendly founder with high energy, simple language, and a conversational pace."
     prompt = build_system_prompt(deck)
-    assert "WHO YOU ARE: A friendly founder with high energy, simple language, and a conversational pace." in prompt
-    assert "WHO YOU ARE: A polished consultant with boardroom language." not in prompt
+    assert "<persona>\nA friendly founder with high energy, simple language, and a conversational pace." in prompt
+    assert "A polished consultant with boardroom language." not in prompt
     print("ok: user persona override wins")
+
+
+def test_prompt_wraps_major_sections_in_xml_tags():
+    prompt = build_system_prompt(_deck())
+    for tag in (
+        "opening",
+        "closing",
+        "deck",
+        "presentation_flow",
+        "qa_handling",
+        "interruption_handling",
+        "voice_rules",
+        "visual_grounding",
+    ):
+        assert f"<{tag}>" in prompt and f"</{tag}>" in prompt, f"missing <{tag}> block"
+    print("ok: major sections are wrapped in XML tags")
+
+
+def test_prompt_wraps_each_slide_in_a_tagged_block():
+    prompt = build_system_prompt(_deck())
+    assert '<slide number="1">' in prompt
+    assert "<title>Overview</title>" in prompt
+    assert "<notes>We start with the main idea.</notes>" in prompt
+    assert '<slide number="2">' in prompt
+    assert "<transition>Now let's get concrete.</transition>" in prompt
+    print("ok: each slide is its own tagged block within <deck>")
 
 
 if __name__ == "__main__":
     test_on_demand_prompt_mentions_look_at_slide()
     test_eager_prompt_preserves_current_slide_image_wording()
-    test_kickoff_cue_only_delivers_opening()
+    test_kickoff_cue_lets_model_decide_on_slide_1()
     test_prompt_uses_generated_persona_when_no_override()
     test_prompt_prefers_user_persona_override()
+    test_prompt_wraps_major_sections_in_xml_tags()
+    test_prompt_wraps_each_slide_in_a_tagged_block()
     print("\nAll prompt tests passed.")

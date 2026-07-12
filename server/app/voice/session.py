@@ -104,6 +104,12 @@ def _slide_change_frame(slide_number: int) -> RTVIServerMessageFrame:
     )
 
 
+def _recent_turns(turns: list[dict], n: int = 5) -> list[dict]:
+    """A small snapshot of the last few transcript turns ({role, content}),
+    handed to the Q&A extractor as context for judging a question's intent."""
+    return [{"role": t["role"], "content": t["content"]} for t in turns[-n:]]
+
+
 def _last_assistant_text(messages: list) -> str:
     """The most recent assistant turn's spoken text, used to replay on resume."""
     for msg in reversed(messages):
@@ -134,7 +140,7 @@ def _message_field(message: Any, key: str, default: Any = None) -> Any:
 
 def _parse_client_message(message: Any, expected: str) -> tuple[str | None, dict[str, Any]]:
     """Normalize a browser client message across transport shapes, matching a
-    specific inner type (e.g. 'presentation-flow', 'qa-question'). Returns the
+    specific inner type (e.g. 'presentation-flow', 'manual-slide'). Returns the
     matched type and its data payload, or (None, {}) if it doesn't match."""
     message_type = _message_field(message, "type")
     data = _message_field(message, "data") or {}
@@ -331,9 +337,10 @@ class VoiceSessionRunner:
         # ALL presentation position/flow state — current slide, linear progress,
         # coverage, autopilot, interruption tracking, pause buffer, Q&A pairing —
         # lives in this one object; see app/voice/state.py for the ownership
-        # model. `state` below is pipeline liveness only. The kickoff turn is
-        # just the short opening; slide 1 still runs through the normal
-        # interruptible flow.
+        # model. `state` below is pipeline liveness only. The kickoff cue lets
+        # the model decide whether slide 1 is cover/title material to fold into
+        # the opening (go_to_slide reason="navigation" advances past it) or real
+        # content, presented normally afterward as the first slide.
         ps = PresentationState(slide_total)
         state = _PresenterState()
 
@@ -495,6 +502,9 @@ class VoiceSessionRunner:
         @transcript.event_handler("on_transcript_update")
         async def on_transcript_update(_processor, frame) -> None:
             for msg in frame.messages:
+                # Snapshot the conversation BEFORE appending this turn, so a
+                # question's context is what preceded it, not itself.
+                history = _recent_turns(turns)
                 turns.append(
                     {
                         "role": msg.role,
@@ -507,7 +517,7 @@ class VoiceSessionRunner:
                 # straight into context, never through STT). The assistant turn
                 # that follows a pending question is its answer.
                 if msg.role == "user":
-                    ps.qa_open(msg.content, ps.current_slide)
+                    ps.qa_open(msg.content, ps.current_slide, history)
                 elif msg.role == "assistant":
                     qa_try_close(msg.content, ps.current_slide)
 
@@ -575,10 +585,23 @@ class VoiceSessionRunner:
         qa_tasks: set[asyncio.Task] = set()
 
         async def process_qa(
-            question: str, answer: str, ask_slide: int, answer_slide: int
+            question: str,
+            answer: str,
+            ask_slide: int,
+            answer_slide: int,
+            history: list[dict],
         ) -> None:
+            slide_title = ""
+            if 1 <= ask_slide <= slide_total:
+                slide_title = deck.slides[ask_slide - 1].title
             try:
-                result = await self._qa_extractor.extract(utterance=question, reply=answer)
+                result = await self._qa_extractor.extract(
+                    utterance=question,
+                    reply=answer,
+                    deck_title=deck.title,
+                    slide_title=slide_title,
+                    history=history,
+                )
             except Exception:
                 logger.exception("Q&A extraction failed")
                 return
@@ -603,7 +626,13 @@ class VoiceSessionRunner:
             if pending is None:
                 return
             t = asyncio.create_task(
-                process_qa(pending["question"], answer.strip(), pending["ask_slide"], answer_slide)
+                process_qa(
+                    pending["question"],
+                    answer.strip(),
+                    pending["ask_slide"],
+                    answer_slide,
+                    pending.get("history", []),
+                )
             )
             qa_tasks.add(t)
             t.add_done_callback(qa_tasks.discard)
@@ -741,18 +770,6 @@ class VoiceSessionRunner:
 
         @rtvi.event_handler("on_client_message")
         async def on_client_message(rtvi_proc, message) -> None:
-            # Typed questions have no STT transcript, so the browser tells us when
-            # the audience asks one by text; spoken ones are caught server-side.
-            qa_type, qa_data = _parse_client_message(message, "qa-question")
-            if qa_type == "qa-question":
-                # A typed question has no VAD speech-start, so release the
-                # narration claim here; the follow-up answer turn must not be
-                # mistaken for slide narration if it gets barged into.
-                ps.release_narration()
-                ps.qa_open(str(qa_data.get("text", "")), ps.current_slide)
-                await rtvi_proc.send_server_response(message, {"ok": True})
-                return
-
             # The audience flipped the slide by hand in the browser: mirror it
             # so slide tags and image lookups stay truthful server-side (the
             # model separately gets a hidden text note from the browser).

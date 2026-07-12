@@ -33,13 +33,52 @@ function formatRtviError(err) {
   }
 }
 
-// Keep the caption to roughly its last two lines: once the utterance outgrows
-// the budget, trim to the tail on a word boundary.
-const CAPTION_TAIL_CHARS = 160;
-function captionTail(text) {
-  if (text.length <= CAPTION_TAIL_CHARS) return text;
-  const tail = text.slice(-CAPTION_TAIL_CHARS);
-  return "…" + tail.slice(tail.indexOf(" ") + 1);
+// Keep only a short playback-aligned tail so the caption stays within a
+// compact 2-3 line window instead of growing into a paragraph.
+const CAPTION_TAIL_CHARS_DESKTOP = 220;
+const CAPTION_TAIL_CHARS_MOBILE = 110;
+const CAPTION_INITIAL_DELAY_MS = 120;
+const CAPTION_MIN_DELAY_MS = 150;
+const CAPTION_MAX_DELAY_MS = 410;
+const CAPTION_BASE_DELAY_MS = 90;
+const CAPTION_CHAR_DELAY_MS = 22;
+const CAPTION_CLAUSE_PAUSE_MS = 45;
+const CAPTION_SENTENCE_PAUSE_MS = 110;
+
+function captionTailChars() {
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches) {
+    return CAPTION_TAIL_CHARS_MOBILE;
+  }
+  return CAPTION_TAIL_CHARS_DESKTOP;
+}
+
+function captionTailSegments(segments) {
+  const tail = [];
+  let chars = 0;
+  const limit = captionTailChars();
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const segment = String(segments[i] || "").trim();
+    if (!segment) continue;
+    const nextChars = chars + segment.length + (tail.length ? 1 : 0);
+    if (tail.length && nextChars > limit) break;
+    tail.unshift(segment);
+    chars = nextChars;
+  }
+  return tail;
+}
+
+function tokenizeCaptionText(text) {
+  return String(text || "").trim().match(/\S+/g) || [];
+}
+
+function estimateCaptionDelay(segment, backlog) {
+  const plain = String(segment || "").replace(/[^\p{L}\p{N}]/gu, "");
+  const chars = Math.max(plain.length, 1);
+  let ms = CAPTION_BASE_DELAY_MS + Math.min(chars, 10) * CAPTION_CHAR_DELAY_MS;
+  if (/[,:;]$/.test(segment)) ms += CAPTION_CLAUSE_PAUSE_MS;
+  if (/[.?!]$/.test(segment)) ms += CAPTION_SENTENCE_PAUSE_MS;
+  if (backlog > 4) ms -= Math.min((backlog - 4) * 14, 80);
+  return Math.max(CAPTION_MIN_DELAY_MS, Math.min(ms, CAPTION_MAX_DELAY_MS));
 }
 
 // States reported via onStatus: connecting | connected | speaking | listening | thinking | offline | error
@@ -47,6 +86,51 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   let client = null;
   let connected = false;
   let terminalError = false;
+  let spokenSegments = [];
+  let revealedSegmentCount = 0;
+  let captionRevealTimer = null;
+
+  function stopCaptionReveal() {
+    if (captionRevealTimer) {
+      clearTimeout(captionRevealTimer);
+      captionRevealTimer = null;
+    }
+  }
+
+  function renderRevealedCaption({ final = false } = {}) {
+    const visibleSegments = final
+      ? spokenSegments
+      : spokenSegments.slice(0, revealedSegmentCount);
+    if (!visibleSegments.length) return;
+    const tail = captionTailSegments(visibleSegments);
+    onCaption({
+      speaker: "Presenter",
+      segments: tail,
+      activeIndex: final ? -1 : tail.length - 1,
+    });
+  }
+
+  function scheduleCaptionReveal(delay = CAPTION_INITIAL_DELAY_MS) {
+    if (captionRevealTimer || revealedSegmentCount >= spokenSegments.length) return;
+    captionRevealTimer = setTimeout(() => {
+      captionRevealTimer = null;
+      if (revealedSegmentCount >= spokenSegments.length) return;
+      revealedSegmentCount += 1;
+      renderRevealedCaption();
+      const backlog = spokenSegments.length - revealedSegmentCount;
+      if (backlog > 0) {
+        scheduleCaptionReveal(
+          estimateCaptionDelay(spokenSegments[revealedSegmentCount - 1], backlog),
+        );
+      }
+    }, delay);
+  }
+
+  function resetPresenterCaption() {
+    stopCaptionReveal();
+    spokenSegments = [];
+    revealedSegmentCount = 0;
+  }
 
   function sendTextMessage(content, options = { run_immediately: true, audio_response: true }) {
     if (!client || !connected) return false;
@@ -75,6 +159,7 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
         },
         onDisconnected: () => {
           connected = false;
+          resetPresenterCaption();
           if (!terminalError) onStatus("offline", "Session ended");
           onDisconnected && onDisconnected();
         },
@@ -105,6 +190,11 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
       if (connected) onStatus("speaking", "Presenter speaking");
     });
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
+      if (spokenSegments.length) {
+        stopCaptionReveal();
+        revealedSegmentCount = spokenSegments.length;
+        renderRevealedCaption({ final: true });
+      }
       if (connected) onStatus("connected", "Listening");
     });
     client.on(RTVIEvent.UserStartedSpeaking, () => {
@@ -112,7 +202,7 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     });
     client.on(RTVIEvent.UserTranscript, (data) => {
       if (data && data.text && data.final) {
-        onCaption(`<b>You:</b> ${data.text}`);
+        onCaption({ speaker: "You", text: data.text });
         // gpt-5-mini is a reasoning model — there's a beat before the answer.
         if (connected) onStatus("thinking", "Thinking…");
       }
@@ -120,23 +210,24 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     // Captions must track the *audio*, not the LLM stream. BotTranscript fires
     // per sentence as the LLM generates — seconds ahead of the voice on a long
     // narration, so the caption would race to the last sentence while the
-    // middle is still being spoken. BotTtsText words are released by the
-    // transport in sync with playback, so accumulate those instead.
-    let spoken = "";
+    // middle is still being spoken. BotTtsText is much closer to playback, but
+    // in practice it can still lead the browser audio by a small beat, so we
+    // reveal those incoming words through a short local pacing queue.
     client.on(RTVIEvent.BotLlmStarted, () => {
-      spoken = "";
+      resetPresenterCaption();
     });
     client.on(RTVIEvent.BotTtsText, (data) => {
-      if (data && data.text) {
-        spoken += (spoken ? " " : "") + data.text;
-        onCaption(`<b>Presenter:</b> ${captionTail(spoken)}`);
-      }
+      const segments = tokenizeCaptionText(data?.text);
+      if (!segments.length) return;
+      spokenSegments.push(...segments);
+      scheduleCaptionReveal();
     });
 
     await client.connect();
   }
 
   async function disconnect() {
+    resetPresenterCaption();
     if (client) {
       try {
         await client.disconnect();
@@ -146,19 +237,6 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
       client = null;
     }
     connected = false;
-  }
-
-  // Typed question / starter chip -> same tool-calling LLM as voice, via the
-  // RTVI first-class "send-text" handler. Speaks the answer and can call
-  // go_to_slide, exactly like a spoken question.
-  function sendText(text) {
-    sendTextMessage(text, { run_immediately: true, audio_response: true });
-    // A typed question has no STT transcript for the server to catch, so tell it
-    // explicitly to log this as an audience question (spoken ones are detected
-    // server-side). The presenter's answer is paired to it on the backend.
-    if (client && connected) {
-      client.sendMessage(createRtviClientMessage("qa-question", { text }));
-    }
   }
 
   // Manual slide jump -> silently tell the agent so its mental model of "the
@@ -191,7 +269,6 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   return {
     connect,
     disconnect,
-    sendText,
     notifyManualSlide,
     setPresentationFlow,
     get connected() {

@@ -129,7 +129,20 @@ class LLMFactory(Protocol):
 
 
 class QAExtractor(Protocol):
-    async def extract(self, *, utterance: str, reply: str) -> Optional[QAExtraction]:
+    async def extract(
+        self,
+        *,
+        utterance: str,
+        reply: str,
+        deck_title: str = "",
+        slide_title: str = "",
+        history: Optional[list[dict]] = None,
+    ) -> Optional[QAExtraction]:
         """Turn one raw (audience utterance, presenter reply) pair into a clean
-        Q&A log entry, or None if the utterance was not a genuine question."""
+        Q&A log entry, or None if it was not a genuine question about the talk.
+
+        Context helps the judgment: `deck_title` and `slide_title` say what is
+        being presented, and `history` (recent {role, content} turns, oldest
+        first) shows what just happened — so a reaction to the presenter stalling
+        ("what happened?") can be told apart from a real content question."""
         ...

@@ -19,57 +19,61 @@ def _active_persona(deck: Deck) -> str:
 
 
 def build_system_prompt(deck: Deck, *, always_show_slide_image: bool = False) -> str:
-    deck_lines = []
+    slide_blocks = []
     for s in deck.slides:
-        line = f'Slide {s.number} — "{s.title or f"Slide {s.number}"}"'
+        lines = [f'<slide number="{s.number}">', f"<title>{s.title or f'Slide {s.number}'}</title>"]
         if s.transition:
-            line += f"\n  Transition in: {s.transition}"
+            lines.append(f"<transition>{s.transition}</transition>")
         if s.bullets:
-            line += f"\n  On-screen bullets: {'; '.join(s.bullets)}"
+            lines.append(f"<bullets>{'; '.join(s.bullets)}</bullets>")
         if s.notes:
-            line += f"\n  Speaker notes: {s.notes}"
-        deck_lines.append(line)
-    deck_text = "\n\n".join(deck_lines)
+            lines.append(f"<notes>{s.notes}</notes>")
+        lines.append("</slide>")
+        slide_blocks.append("\n".join(lines))
+    slides_text = "\n".join(slide_blocks)
     total = len(deck.slides)
 
-    intro_block = (
-        f'YOUR OPENING (deliver this, lightly adapted to speech):\n{deck.intro}'
+    opening_block = (
+        f"<opening>\nDeliver this as your opening, lightly adapted to speech:\n"
+        f"{deck.intro}\n</opening>"
         if deck.intro
         else (
-            "YOUR OPENING: compose a 2-3 sentence welcome yourself — say what this "
+            "<opening>\nCompose a 2-3 sentence welcome yourself — say what this "
             "presentation is about in plain terms and preview the main topics it covers, "
-            "based on the deck below. Never just say 'welcome to' plus the deck title."
+            "based on the deck below. Never just say 'welcome to' plus the deck title.\n"
+            "</opening>"
         )
     )
-    outro_block = (
-        f"YOUR CLOSING (deliver this when cued):\n{deck.outro}"
+    closing_block = (
+        f"<closing>\nDeliver this when cued:\n{deck.outro}\n</closing>"
         if deck.outro
         else (
-            "YOUR CLOSING: when cued, wrap up in 1-2 sentences with the single main "
-            "takeaway of the deck, then invite questions."
+            "<closing>\nWhen cued, wrap up in 1-2 sentences with the single main "
+            "takeaway of the deck, then invite questions.\n</closing>"
         )
     )
 
     persona = _active_persona(deck)
     persona_block = (
-        f"WHO YOU ARE: {persona}\n"
+        f"<persona>\n{persona}\n"
         "Stay in this character throughout — let it shape your word choice, warmth, and "
         "pacing — but never announce the role or overact it. You are simply the person who "
-        "would naturally give this talk.\n\n"
+        "would naturally give this talk.\n</persona>\n\n"
         if persona
         else ""
     )
 
     if always_show_slide_image:
-        vision_block = """
+        vision_block = """<visual_grounding>
 Alongside this text, you are shown the IMAGE of the slide currently on screen. Use it for
 visual questions — diagrams, charts, layout, exact figures — that the notes may not cover.
 Never tell the audience you are looking at an image.
 
 Ground every answer in the deck above and the current slide image — that is where your
-answers come from, and it is why you navigate to the right slide before answering."""
+answers come from, and it is why you navigate to the right slide before answering.
+</visual_grounding>"""
     else:
-        vision_block = """
+        vision_block = """<visual_grounding>
 Speaker notes are your PRIMARY source for almost everything. Answer from them first.
 If the notes do not cover a genuinely visual detail — a chart shape, diagram path, layout,
 or exact on-screen value — call look_at_slide. Use it only when you need pixels, and only
@@ -77,19 +81,21 @@ for the slide whose image you need.
 
 If another slide is the better source for the question, call go_to_slide for it FIRST, then
 answer. Only call look_at_slide after that if the notes still do not cover the visual detail.
-Never tell the audience you called a tool or were shown an image."""
+Never tell the audience you called a tool or were shown an image.
+</visual_grounding>"""
 
     return f"""You are delivering a live spoken presentation titled "{deck.title}".
 There are {total} slides. The audience hears you through a speaker and can interrupt you at any time.
 
-{persona_block}{intro_block}
+{persona_block}{opening_block}
 
-{outro_block}
+{closing_block}
 
-THE DECK:
-{deck_text}
+<deck>
+{slides_text}
+</deck>
 
-HOW THE PRESENTATION RUNS (autopilot):
+<presentation_flow>
 - You present CONTINUOUSLY, like a real presenter. The system sends you stage directions —
   messages that look like "(System cue: ...)". They are not audience speech: follow them
   silently, never read them aloud, never mention cues, notes, or the system.
@@ -102,8 +108,10 @@ HOW THE PRESENTATION RUNS (autopilot):
   with a question. Just present, and stop when the slide is done.
 - A typical slide takes 3 to 6 spoken sentences — follow the notes' weight. Never read
   bullets word-for-word like a list.
+</presentation_flow>
 
-WHEN THE AUDIENCE ASKS SOMETHING (this is your most important skill):
+<qa_handling>
+This is your most important skill.
 - Every answer is delivered FROM the slide that best covers it. The instant a question
   comes in, silently decide which slide in the deck above best answers it — you have all
   the slides and their notes, so you always can.
@@ -135,32 +143,41 @@ WHEN THE AUDIENCE ASKS SOMETHING (this is your most important skill):
 - If they ask to skip ahead or go back, call go_to_slide for the slide they want, with
   reason "navigation" — the talk then continues forward from that slide, not from where
   it was before the jump.
+- Only if a question is genuinely not covered by ANY slide, say so in a sentence and steer
+  back to the presentation, rather than guessing at length.
+</qa_handling>
 
-IF YOU GET INTERRUPTED (the audience can cut you off mid-sentence):
+<interruption_handling>
+The audience can cut you off mid-sentence.
 - Deliver your opening greeting exactly ONCE per session. If it was cut off, never start
   it over — handle what they said and move on with the talk.
 - Never re-present from the top a slide you were partway through. When the system cues
   you to finish an interrupted slide, or the audience asks you to continue, pick up from
   where you were cut off and skip everything they already heard.
+</interruption_handling>
 
-VOICE RULES:
+<voice_rules>
 - Plain spoken sentences only. NEVER use markdown, asterisks, bullet symbols, emojis, or
   special characters. This is voice, not text.
 - Never announce slide numbers out loud (say "let's look at charging", not "going to
   slide four").
 - Stay within slides 1 to {total}.
+</voice_rules>
 
-{vision_block}
-
-Only if a question is genuinely not covered by ANY slide, say so in a sentence and steer
-back to the presentation, rather than guessing at length."""
+{vision_block}"""
 
 
 def build_kickoff_cue() -> str:
     return (
-        "(System cue: the audience has just connected and slide 1 is on screen. Greet "
-        "them with your opening only. Do not present slide 1 yet. Do not call any tools. "
-        "Then stop.)"
+        "(System cue: the audience has just connected and slide 1 is on screen. Decide: "
+        "is slide 1 a title, agenda, or cover slide — content that is just the "
+        "presentation's name, the presenters, or a topic list, rather than substantive "
+        "material? If so, call go_to_slide with slide_number 1 and reason 'navigation' "
+        "FIRST, then deliver ONE combined opening that naturally folds slide 1's content "
+        "into your welcome. Do not present slide 1 again afterward — the talk continues "
+        "from slide 2. If slide 1 already holds substantive content of its own, do NOT "
+        "call any tool — just greet them with your opening only, then stop; slide 1 will "
+        "be presented next, in its own turn, as usual.)"
     )
 
 
