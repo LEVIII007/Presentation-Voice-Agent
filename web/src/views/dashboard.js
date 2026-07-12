@@ -11,6 +11,10 @@ function statusPill(status) {
   return h("span", { class: `pill ${status}${live ? " live" : ""}` }, h("span", { class: "dot" }), label);
 }
 
+function featureChip(text) {
+  return h("span", { class: "feature-chip" }, text);
+}
+
 function deckCard(deck, onDelete) {
   const target =
     deck.status === "ready"
@@ -18,6 +22,13 @@ function deckCard(deck, onDelete) {
       : deck.status === "failed"
         ? `#/deck/${deck.id}/processing`
         : `#/deck/${deck.id}/processing`;
+
+  const statusCopy = {
+    ready: "Ready to review, share, and present live.",
+    processing: "Rendering slides and drafting narration now.",
+    uploaded: "Queued to start processing on the server.",
+    failed: "Processing stopped early. You can retry and continue.",
+  }[deck.status] || "Open to continue.";
 
   const actions = h("div", { class: "card-actions" });
   if (deck.status === "ready") {
@@ -36,11 +47,19 @@ function deckCard(deck, onDelete) {
   );
 
   return h(
-    "div",
-    { class: "card link", onClick: () => navigate(target) },
-    h("div", { class: "row" }, statusPill(deck.status), h("span", { class: "meta" }, fmtDate(deck.created_at))),
+    "article",
+    { class: "card deck-card link", onClick: () => navigate(target) },
+    h("div", { class: "row card-head" }, statusPill(deck.status), h("span", { class: "meta" }, fmtDate(deck.created_at))),
     h("div", { class: "title" }, deck.title || deck.source_filename),
-    h("div", { class: "meta" }, deck.slide_count ? `${deck.slide_count} slides` : "—", deck.status === "failed" && deck.error ? ` · ${deck.error}` : ""),
+    h("div", { class: "deck-card-copy" }, statusCopy),
+    h(
+      "div",
+      { class: "deck-card-meta" },
+      h("span", { class: "meta-chip" }, deck.slide_count ? `${deck.slide_count} slides` : "Counting slides"),
+      deck.status === "failed" && deck.error
+        ? h("span", { class: "meta-chip meta-chip-warn" }, deck.error)
+        : null,
+    ),
     actions,
   );
 }
@@ -52,9 +71,10 @@ function uploadZone(onFile) {
   const zone = h(
     "div",
     { class: "dropzone", onClick: () => input.click() },
-    h("div", { class: "icon" }, "⬆"),
+    h("div", { class: "dropzone-orb", "aria-hidden": "true" }),
+    h("div", { class: "icon" }, "Upload"),
     h("div", { class: "big" }, "Drop a PDF or PPTX, or click to browse"),
-    h("div", { class: "hint" }, "Up to 40 MB · 60 slides. Keynote/PPT → export to PDF first."),
+    h("div", { class: "hint" }, "Up to 40 MB and 60 slides. Export Keynote decks to PDF first."),
     input,
   );
   const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
@@ -65,25 +85,22 @@ function uploadZone(onFile) {
 }
 
 export async function renderDashboard() {
-  const page = h("div", { class: "page" });
+  const page = h("div", {
+    class: "page dashboard-page",
+    dataset: { surface: "product", subtitle: "Voice presenter studio" },
+  });
   mount(page);
 
-  const head = h(
-    "div",
-    { class: "page-head" },
-    h("div", {}, h("h2", {}, "Your decks"), h("div", { class: "sub" }, "Upload a deck and it becomes a slideshow you can talk to.")),
-  );
-  page.append(head);
-
-  const progressWrap = h("div", { style: "display:none;margin-bottom:20px" });
+  const progressWrap = h("div", { class: "upload-progress", style: "display:none" });
   const progressBar = h("div", { class: "bar" }, h("span", { style: "width:0%" }));
   const progressLabel = h("div", { class: "stage-label" }, "");
-  progressWrap.append(progressLabel, progressBar);
-  const personaInput = h("textarea", {
-    rows: "3",
-    id: "persona-input",
-    placeholder: "Example: Present like a warm founder who explains clearly and keeps the pace lively.",
-  });
+  progressWrap.append(
+    h("div", { class: "upload-progress-head" },
+      h("div", { class: "eyebrow eyebrow-compact" }, "Upload status"),
+      progressLabel,
+    ),
+    progressBar,
+  );
 
   async function handleFile(file) {
     const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
@@ -94,12 +111,10 @@ export async function renderDashboard() {
     progressLabel.textContent = `Uploading ${file.name}…`;
     try {
       const deck = await api.upload(file, {
-        personaOverride: personaInput.value.trim(),
         onProgress: (frac) => {
           progressBar.firstChild.style.width = `${Math.round(frac * 100)}%`;
         },
       });
-      personaInput.value = "";
       toast("Uploaded — starting ingestion", "success");
       navigate(`#/deck/${deck.id}/processing`);
     } catch (e) {
@@ -109,28 +124,100 @@ export async function renderDashboard() {
   }
 
   const zone = uploadZone(handleFile);
-  const personaCard = h(
-    "div",
-    { class: "upload-option-card" },
-    h("label", { class: "form-label", for: "persona-input" }, "Presenter persona (optional)"),
+  const hero = h(
+    "section",
+    { class: "dashboard-hero" },
     h(
       "div",
-      { class: "field-note" },
-      "Tell the presenter how to act while giving the talk. Leave this blank and we will choose a fitting persona from the deck.",
+      { class: "dashboard-hero-copy" },
+      h("div", { class: "eyebrow" }, "Voice-presented decks"),
+      h("h1", { class: "hero-title" }, "Give every deck a voice."),
+      h(
+        "p",
+        { class: "hero-body" },
+        "Upload a PDF or PPTX, let the system draft slide-by-slide narration, then turn the deck into a live presenter that can be interrupted, questioned, and shared.",
+      ),
+      h(
+        "div",
+        { class: "hero-feature-row" },
+        featureChip("Upload once"),
+        featureChip("Review speaker notes"),
+        featureChip("Present live and share"),
+      ),
     ),
-    personaInput,
+    h(
+      "div",
+      { class: "dashboard-hero-visual" },
+      h("div", { class: "hero-orb", "aria-hidden": "true" }),
+      h(
+        "div",
+        { class: "hero-signal-card" },
+        h("div", { class: "signal-label" }, "Workflow"),
+        h("div", { class: "signal-title" }, "Upload. Review. Present."),
+        h(
+          "div",
+          { class: "signal-copy" },
+          "Built for teams who want premium decks, live narration, and fast handoff from authoring to audience questions.",
+        ),
+        h(
+          "div",
+          { class: "signal-steps" },
+          h("span", { class: "signal-step" }, "PDF or PPTX"),
+          h("span", { class: "signal-step" }, "AI notes"),
+          h("span", { class: "signal-step" }, "Shareable viewer"),
+        ),
+      ),
+    ),
   );
-  page.append(zone, personaCard, progressWrap);
 
-  const listWrap = h("div", { style: "margin-top:28px" }, h("div", { class: "spinner" }));
-  page.append(listWrap);
+  const uploadSection = h(
+    "section",
+    { class: "dashboard-upload-panel" },
+    h(
+      "div",
+      { class: "section-intro" },
+      h("h4", { class: "section-title" }, "Start a new presentation"),
+      h(
+        "p",
+        { class: "section-copy" },
+        "Drop in a deck and we will prepare a talkable version.",
+      ),
+    ),
+    zone,
+    progressWrap,
+  );
+
+  const listWrap = h("div", { class: "library-grid-wrap" }, h("div", { class: "spinner" }));
+  const librarySection = h(
+    "section",
+    { class: "library-section" },
+    h(
+      "div",
+      { class: "library-head" },
+      h(
+        "div",
+        {},
+        h("h4", { class: "section-title" }, "Your decks"),
+      ),
+    ),
+    listWrap,
+  );
+
+  page.append( uploadSection, librarySection);
 
   async function refreshList() {
     try {
       const { decks } = await api.listDecks();
+      const ready = decks.filter((deck) => deck.status === "ready").length;
       if (!decks.length) {
         listWrap.replaceChildren(
-          h("div", { class: "empty" }, h("div", { class: "icon" }, "🎞"), h("h3", {}, "No decks yet"), h("div", {}, "Upload one above to get started.")),
+          h(
+            "div",
+            { class: "empty library-empty" },
+            h("div", { class: "empty-orb", "aria-hidden": "true" }),
+            h("h3", {}, "No decks yet"),
+            h("div", {}, "Upload one above to turn it into a polished, talkable presentation."),
+          ),
         );
         return;
       }
@@ -151,6 +238,7 @@ export async function renderDashboard() {
       }
       listWrap.replaceChildren(grid);
     } catch (e) {
+      libraryStat.textContent = "Waiting for the backend";
       listWrap.replaceChildren(h("div", { class: "banner error" }, `Backend not reachable — start the server, then reload. (${e.message})`));
     }
   }

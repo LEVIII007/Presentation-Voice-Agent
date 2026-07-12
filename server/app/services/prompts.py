@@ -11,13 +11,6 @@ from __future__ import annotations
 from ..domain.models import Deck
 
 
-def _active_persona(deck: Deck) -> str:
-    override = (deck.persona_override or "").strip()
-    if override:
-        return override
-    return (deck.persona or "").strip()
-
-
 def build_system_prompt(deck: Deck, *, always_show_slide_image: bool = False) -> str:
     slide_blocks = []
     for s in deck.slides:
@@ -53,7 +46,7 @@ def build_system_prompt(deck: Deck, *, always_show_slide_image: bool = False) ->
         )
     )
 
-    persona = _active_persona(deck)
+    persona = (deck.persona or "").strip()
     persona_block = (
         f"<persona>\n{persona}\n"
         "Stay in this character throughout — let it shape your word choice, warmth, and "

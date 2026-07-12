@@ -47,7 +47,6 @@ class Deck:
     intro: str = ""  # spoken welcome + agenda, generated after narration
     outro: str = ""  # spoken closing summary
     persona: str = ""  # suggested presenter role + tone inferred from the deck
-    persona_override: str = ""  # optional user-written presenter direction
     created_at: Optional[datetime] = None
     slides: list[Slide] = field(default_factory=list)
 

@@ -47,22 +47,12 @@ def test_kickoff_cue_lets_model_decide_on_slide_1():
     print("ok: kickoff cue lets the model merge or defer slide 1 based on its content")
 
 
-def test_prompt_uses_generated_persona_when_no_override():
+def test_prompt_uses_generated_persona():
     deck = _deck()
     deck.persona = "An experienced operator who explains tradeoffs clearly and stays grounded."
     prompt = build_system_prompt(deck)
     assert "<persona>\nAn experienced operator who explains tradeoffs clearly and stays grounded." in prompt
-    print("ok: generated persona is used by default")
-
-
-def test_prompt_prefers_user_persona_override():
-    deck = _deck()
-    deck.persona = "A polished consultant with boardroom language."
-    deck.persona_override = "A friendly founder with high energy, simple language, and a conversational pace."
-    prompt = build_system_prompt(deck)
-    assert "<persona>\nA friendly founder with high energy, simple language, and a conversational pace." in prompt
-    assert "A polished consultant with boardroom language." not in prompt
-    print("ok: user persona override wins")
+    print("ok: generated persona is used")
 
 
 def test_prompt_wraps_major_sections_in_xml_tags():
@@ -95,8 +85,7 @@ if __name__ == "__main__":
     test_on_demand_prompt_mentions_look_at_slide()
     test_eager_prompt_preserves_current_slide_image_wording()
     test_kickoff_cue_lets_model_decide_on_slide_1()
-    test_prompt_uses_generated_persona_when_no_override()
-    test_prompt_prefers_user_persona_override()
+    test_prompt_uses_generated_persona()
     test_prompt_wraps_major_sections_in_xml_tags()
     test_prompt_wraps_each_slide_in_a_tagged_block()
     print("\nAll prompt tests passed.")

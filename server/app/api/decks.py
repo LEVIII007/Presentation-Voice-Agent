@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -32,8 +32,6 @@ def _deck_dict(deck: Deck) -> dict:
         "intro": deck.intro,
         "outro": deck.outro,
         "persona": deck.persona,
-        "persona_override": deck.persona_override,
-        "effective_persona": deck.persona_override or deck.persona,
         "created_at": deck.created_at.isoformat() if deck.created_at else None,
     }
 
@@ -54,7 +52,6 @@ def _slide_dict(s: Slide) -> dict:
 @router.post("", status_code=201)
 async def upload_deck(
     file: UploadFile = File(...),
-    persona_override: str = Form(""),
     c=Depends(get_container),
 ):
     ext = Path(file.filename or "").suffix.lower()
@@ -78,14 +75,12 @@ async def upload_deck(
 
     deck_id = uuid.uuid4().hex[:12]
     path = await c.blobs.save(bytes(data), "decks", deck_id, f"source{ext}")
-    persona_override = persona_override.strip()
     deck = Deck(
         id=deck_id,
         title=Path(file.filename).stem,
         source_filename=file.filename,
         source_path=str(path),
         status=DeckStatus.UPLOADED,
-        persona_override=persona_override,
     )
     await c.repo.create_deck(deck)
     c.worker.enqueue(deck_id)
@@ -136,22 +131,6 @@ async def deck_status(deck_id: str, c=Depends(get_container)):
 class SlidePatch(BaseModel):
     title: Optional[str] = None
     notes: Optional[str] = None
-
-
-class DeckPatch(BaseModel):
-    persona_override: Optional[str] = None
-
-
-@router.patch("/{deck_id}")
-async def patch_deck(deck_id: str, patch: DeckPatch, c=Depends(get_container)):
-    deck = await c.repo.get_deck(deck_id)
-    if deck is None:
-        raise HTTPException(404, "Deck not found")
-    persona_override = (
-        patch.persona_override.strip() if patch.persona_override is not None else None
-    )
-    await c.repo.update_deck(deck_id, persona_override=persona_override)
-    return {"ok": True}
 
 
 @router.patch("/{deck_id}/slides/{number}")

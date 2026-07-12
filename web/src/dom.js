@@ -21,9 +21,41 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+function createShell(node) {
+  const surface = node?.dataset?.surface || (node?.classList?.contains("viewer") ? "viewer" : "product");
+  const subtitle = node?.dataset?.subtitle || (surface === "viewer" ? "Live presentation" : "Voice presenter studio");
+  const chrome = node?.dataset?.chrome || "full";
+  const showTopbar = chrome !== "none";
+  const isDashboard = node?.classList?.contains("dashboard-page");
+
+  return h(
+    "div",
+    { class: `app-shell shell-${surface}${showTopbar ? "" : " shell-no-topbar"}` },
+    showTopbar
+      ? h(
+        "header",
+        { id: "topbar" },
+        h(
+          "a",
+          { class: "brand", href: "#/" },
+          h("span", { class: "brand-mark", "aria-hidden": "true" }),
+          h("span", { class: "brand-sub" }, "Voice Slides"),
+        ),
+        h(
+          "div",
+          { class: "topbar-actions" },
+          h("div", { class: "topbar-note" }, subtitle),
+          !isDashboard ? h("a", { class: "shell-link", href: "#/" }, surface === "viewer" ? "All decks" : "Library") : null,
+        ),
+      )
+      : null,
+    h("div", { class: "app-canvas" }, node),
+  );
+}
+
 export function mount(node) {
   const app = document.getElementById("app");
-  app.replaceChildren(node);
+  app.replaceChildren(createShell(node));
 }
 
 export function navigate(hash) {

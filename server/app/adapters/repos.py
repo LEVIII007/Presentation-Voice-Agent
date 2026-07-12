@@ -32,7 +32,6 @@ def _deck_from_row(row: DeckRow) -> Deck:
         intro=row.intro or "",
         outro=row.outro or "",
         persona=row.persona or "",
-        persona_override=row.persona_override or "",
         created_at=row.created_at,
     )
 
@@ -66,7 +65,6 @@ class SqlDeckRepo:
                     status=deck.status.value,
                     slide_count=deck.slide_count,
                     persona=deck.persona,
-                    persona_override=deck.persona_override,
                 )
             )
             await s.commit()
@@ -115,7 +113,6 @@ class SqlDeckRepo:
         intro: Optional[str] = None,
         outro: Optional[str] = None,
         persona: Optional[str] = None,
-        persona_override: Optional[str] = None,
     ) -> None:
         values: dict[str, Any] = {}
         if title is not None:
@@ -130,8 +127,6 @@ class SqlDeckRepo:
             values["outro"] = outro
         if persona is not None:
             values["persona"] = persona
-        if persona_override is not None:
-            values["persona_override"] = persona_override
         if not values:
             return
         async with self._sf() as s:

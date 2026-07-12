@@ -219,7 +219,10 @@ function sessionCard(session) {
 }
 
 export async function renderLatency() {
-  const page = h("div", { class: "page latency-page" }, h("div", { class: "spinner" }));
+  const page = h("div", {
+    class: "page latency-page",
+    dataset: { surface: "product", subtitle: "Latency monitor" },
+  }, h("div", { class: "spinner" }));
   mount(page);
 
   let report;
@@ -229,7 +232,7 @@ export async function renderLatency() {
     mount(
       h(
         "div",
-        { class: "page latency-page" },
+        { class: "page latency-page", dataset: { surface: "product", subtitle: "Latency monitor" } },
         h("div", { class: "banner error" }, `Could not load latency data: ${error.message}`),
         h("a", { href: "#/" }, "<- Back to decks"),
       ),

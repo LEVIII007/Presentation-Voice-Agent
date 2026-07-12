@@ -267,6 +267,23 @@ class _ActivityWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _CaptionWordAligner(FrameProcessor):
+    """Sits between tts and transport.output(). WordTTSService stamps each
+    TTSTextFrame with a pts anchored at the *synthesis* start of its sentence,
+    and the transport releases pts-frames on the wall clock. Synthesis runs
+    several times faster than playback, so over a multi-sentence narration the
+    words are released — and bot-tts-text captions sent — further and further
+    ahead of their audio. Clearing pts turns the words into plain sync frames
+    that ride the transport's audio queue instead: each one is pushed (and its
+    caption emitted) exactly when the audio around it is written out."""
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSTextFrame):
+            frame.pts = None
+        await self.push_frame(frame, direction)
+
+
 class _GenTextTap(FrameProcessor):
     """Sits right after the LLM, so it sees the full generated text of the current
     turn as it streams — ahead of playback. A barge-in diffs this against the
@@ -532,6 +549,7 @@ class VoiceSessionRunner:
                 _GenTextTap(state),  # full generated text, ahead of playback
                 SentenceAggregator(),  # smoother TTS: send whole sentences, not fragments
                 tts,
+                _CaptionWordAligner(),  # word captions ride the audio queue, not the wall clock
                 transport.output(),
                 _ActivityWatcher(
                     state,

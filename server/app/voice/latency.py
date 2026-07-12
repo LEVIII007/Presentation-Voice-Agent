@@ -72,7 +72,6 @@ class LatencyObserver(BaseObserver):
         rel = lambda k: _ms(t[k] - t0) if k in t else None  # noqa: E731
 
         stt = rel("transcript_ns")
-        first_token = rel("llm_first_token_ns")
         first_audio = rel("first_audio_ns")
         # LLM latency = transcript -> first token (includes reasoning + network)
         llm_ttft = (

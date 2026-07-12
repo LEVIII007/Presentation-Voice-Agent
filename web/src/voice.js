@@ -37,6 +37,13 @@ function formatRtviError(err) {
 // compact 2-3 line window instead of growing into a paragraph.
 const CAPTION_TAIL_CHARS_DESKTOP = 220;
 const CAPTION_TAIL_CHARS_MOBILE = 110;
+// Playback-clock sync (primary mode): how often we compare the caption to the
+// audio clock, and how far ahead of the audible word the highlight may run —
+// a touch early reads as natural karaoke, late reads as lag.
+const CAPTION_SYNC_POLL_MS = 100;
+const CAPTION_SYNC_LEAD_MS = 80;
+// Delay-heuristic knobs (fallback mode, used only when the transport's
+// internals are unreachable and we can't observe real playback).
 const CAPTION_INITIAL_DELAY_MS = 120;
 const CAPTION_MIN_DELAY_MS = 150;
 const CAPTION_MAX_DELAY_MS = 410;
@@ -71,6 +78,60 @@ function tokenizeCaptionText(text) {
   return String(text || "").trim().match(/\S+/g) || [];
 }
 
+// --- Playback-clock caption sync --------------------------------------------
+// The server word-times BotTtsText to its audio clock, but the transport's
+// WavStreamPlayer queues incoming PCM in an AudioWorklet and plays it strictly
+// back-to-back — every network stall-then-burst permanently deepens that queue,
+// so on a long narration the audible voice falls an ever-growing buffer behind
+// the word events. Arrival-based delays therefore drift no matter how they're
+// tuned. Instead: count samples received vs samples actually played, anchor
+// each word to the receive count at its arrival (≈ its start position in the
+// stream), and highlight it when playback really reaches that position.
+//
+// Played samples come from the audio context clock: the worklet consumes
+// exactly one render quantum per tick while its stream is live and destroys
+// the stream the moment its queue drains, so live playback advances at
+// exactly real time and a dead stream means everything received was heard.
+//
+// This reaches into @pipecat-ai/websocket-transport internals
+// (transport._mediaManager._wavStreamPlayer). If an upgrade renames them we
+// return null and callers fall back to the delay heuristic below.
+function createCaptionPlaybackClock(transport) {
+  const player = transport && transport._mediaManager && transport._mediaManager._wavStreamPlayer;
+  if (!player || typeof player.add16BitPCM !== "function" || typeof player.sampleRate !== "number") {
+    return null;
+  }
+
+  let receivedSamples = 0;
+  let epochBaseSamples = 0; // received count when the current worklet stream started
+  let epochStartTime = 0; // context time when it started
+
+  const originalAdd = player.add16BitPCM.bind(player);
+  player.add16BitPCM = (data, trackId) => {
+    const wasIdle = !player.stream;
+    const written = originalAdd(data, trackId);
+    if (written && written.length) {
+      if (wasIdle && player.context) {
+        epochBaseSamples = receivedSamples;
+        epochStartTime = player.context.currentTime;
+      }
+      receivedSamples += written.length;
+    }
+    return written;
+  };
+
+  return {
+    sampleRate: player.sampleRate,
+    wordAnchor: () => receivedSamples,
+    playedSamples() {
+      if (!player.stream || !player.context) return receivedSamples;
+      const played =
+        epochBaseSamples + (player.context.currentTime - epochStartTime) * player.sampleRate;
+      return Math.min(receivedSamples, Math.max(epochBaseSamples, played));
+    },
+  };
+}
+
 function estimateCaptionDelay(segment, backlog) {
   const plain = String(segment || "").replace(/[^\p{L}\p{N}]/gu, "");
   const chars = Math.max(plain.length, 1);
@@ -86,9 +147,12 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   let client = null;
   let connected = false;
   let terminalError = false;
+  let playbackClock = null;
   let spokenSegments = [];
+  let segmentAnchors = []; // per-segment received-sample position (sync mode)
   let revealedSegmentCount = 0;
   let captionRevealTimer = null;
+  let captionFinalPending = false;
 
   function stopCaptionReveal() {
     if (captionRevealTimer) {
@@ -110,8 +174,42 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     });
   }
 
-  function scheduleCaptionReveal(delay = CAPTION_INITIAL_DELAY_MS) {
+  // Sync mode: reveal every word whose anchor the audio clock has passed, keep
+  // polling while a backlog remains, and only drop the highlight once the
+  // buffered audio has actually drained (BotStoppedSpeaking fires when the
+  // *server* finishes sending — the client may still have seconds queued).
+  function syncedRevealTick() {
+    captionRevealTimer = null;
+    if (!spokenSegments.length) return;
+    const leadSamples = (CAPTION_SYNC_LEAD_MS / 1000) * playbackClock.sampleRate;
+    const played = playbackClock.playedSamples() + leadSamples;
+    let changed = false;
+    while (
+      revealedSegmentCount < spokenSegments.length &&
+      segmentAnchors[revealedSegmentCount] <= played
+    ) {
+      revealedSegmentCount += 1;
+      changed = true;
+    }
+    if (revealedSegmentCount < spokenSegments.length) {
+      if (changed) renderRevealedCaption();
+      scheduleCaptionReveal();
+      return;
+    }
+    if (captionFinalPending) {
+      captionFinalPending = false;
+      renderRevealedCaption({ final: true });
+    } else if (changed) {
+      renderRevealedCaption();
+    }
+  }
+
+  function scheduleCaptionReveal(delay) {
     if (captionRevealTimer || revealedSegmentCount >= spokenSegments.length) return;
+    if (playbackClock) {
+      captionRevealTimer = setTimeout(syncedRevealTick, delay ?? CAPTION_SYNC_POLL_MS);
+      return;
+    }
     captionRevealTimer = setTimeout(() => {
       captionRevealTimer = null;
       if (revealedSegmentCount >= spokenSegments.length) return;
@@ -123,13 +221,15 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
           estimateCaptionDelay(spokenSegments[revealedSegmentCount - 1], backlog),
         );
       }
-    }, delay);
+    }, delay ?? CAPTION_INITIAL_DELAY_MS);
   }
 
   function resetPresenterCaption() {
     stopCaptionReveal();
     spokenSegments = [];
+    segmentAnchors = [];
     revealedSegmentCount = 0;
+    captionFinalPending = false;
   }
 
   function sendTextMessage(content, options = { run_immediately: true, audio_response: true }) {
@@ -141,6 +241,10 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
   async function connect() {
     onStatus("connecting", "Connecting…");
     const transport = new WebSocketTransport();
+    playbackClock = createCaptionPlaybackClock(transport);
+    if (!playbackClock) {
+      console.warn("Caption playback clock unavailable; falling back to delay heuristic.");
+    }
     client = new RTVIClient({
       transport,
       params: {
@@ -191,9 +295,16 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     });
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
       if (spokenSegments.length) {
-        stopCaptionReveal();
-        revealedSegmentCount = spokenSegments.length;
-        renderRevealedCaption({ final: true });
+        if (playbackClock && revealedSegmentCount < spokenSegments.length) {
+          // Server-side end of speech; the client buffer may still be playing.
+          // Let the synced reveal drain it, then drop the highlight.
+          captionFinalPending = true;
+          scheduleCaptionReveal();
+        } else {
+          stopCaptionReveal();
+          revealedSegmentCount = spokenSegments.length;
+          renderRevealedCaption({ final: true });
+        }
       }
       if (connected) onStatus("connected", "Listening");
     });
@@ -209,17 +320,22 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     });
     // Captions must track the *audio*, not the LLM stream. BotTranscript fires
     // per sentence as the LLM generates — seconds ahead of the voice on a long
-    // narration, so the caption would race to the last sentence while the
-    // middle is still being spoken. BotTtsText is much closer to playback, but
-    // in practice it can still lead the browser audio by a small beat, so we
-    // reveal those incoming words through a short local pacing queue.
+    // narration. BotTtsText is word-timed by the server, but the browser plays
+    // audio an unbounded (and growing) buffer behind arrival, so each word is
+    // anchored to its position in the received audio stream and revealed when
+    // playback actually reaches it (see createCaptionPlaybackClock). Without
+    // the clock we fall back to the delay-heuristic reveal.
     client.on(RTVIEvent.BotLlmStarted, () => {
       resetPresenterCaption();
     });
     client.on(RTVIEvent.BotTtsText, (data) => {
       const segments = tokenizeCaptionText(data?.text);
       if (!segments.length) return;
-      spokenSegments.push(...segments);
+      const anchor = playbackClock ? playbackClock.wordAnchor() : 0;
+      for (const segment of segments) {
+        spokenSegments.push(segment);
+        segmentAnchors.push(anchor);
+      }
       scheduleCaptionReveal();
     });
 
@@ -266,11 +382,18 @@ export function createVoiceSession({ deckId, enableMic = true, onStatus, onCapti
     return true;
   }
 
+  function setMicEnabled(enabled) {
+    if (!client || !connected) return false;
+    client.enableMic(Boolean(enabled));
+    return true;
+  }
+
   return {
     connect,
     disconnect,
     notifyManualSlide,
     setPresentationFlow,
+    setMicEnabled,
     get connected() {
       return connected;
     },

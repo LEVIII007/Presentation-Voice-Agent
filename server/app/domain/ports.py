@@ -44,7 +44,6 @@ class DeckRepo(Protocol):
         intro: Optional[str] = None,
         outro: Optional[str] = None,
         persona: Optional[str] = None,
-        persona_override: Optional[str] = None,
     ) -> None: ...
 
     async def ensure_slides(self, deck_id: str, count: int) -> None:

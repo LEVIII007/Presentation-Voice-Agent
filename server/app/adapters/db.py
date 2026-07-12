@@ -40,7 +40,6 @@ class DeckRow(Base):
     intro: Mapped[str] = mapped_column(Text, default="")
     outro: Mapped[str] = mapped_column(Text, default="")
     persona: Mapped[str] = mapped_column(Text, default="")
-    persona_override: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -77,7 +76,6 @@ _MIGRATIONS = [
     ("decks", "intro", "TEXT NOT NULL DEFAULT ''"),
     ("decks", "outro", "TEXT NOT NULL DEFAULT ''"),
     ("decks", "persona", "TEXT NOT NULL DEFAULT ''"),
-    ("decks", "persona_override", "TEXT NOT NULL DEFAULT ''"),
     ("slides", "transition", "TEXT NOT NULL DEFAULT ''"),
 ]
 

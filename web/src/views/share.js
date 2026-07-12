@@ -11,9 +11,10 @@ export function openShareModal(deckId) {
   const back = h("div", { class: "modal-back", onClick: (e) => { if (e.target === back) back.remove(); } });
   const modal = h(
     "div",
-    { class: "modal" },
+    { class: "modal share-modal" },
+    h("div", { class: "eyebrow eyebrow-compact" }, "Share"),
     h("h3", {}, "Share this presentation"),
-    h("p", { class: "sub", style: "color:var(--muted);font-size:14px" }, "Anyone with the link can open the talkable deck in their browser."),
+    h("p", { class: "share-copy" }, "Anyone with the link can open the talkable deck in their browser and ask questions live."),
     h("div", { class: "share-url" }, input, h("button", {
       class: "btn sm",
       onClick: async () => {
@@ -21,7 +22,7 @@ export function openShareModal(deckId) {
         catch { input.select(); toast("Press ⌘/Ctrl+C to copy", "info"); }
       },
     }, "Copy")),
-    h("div", { style: "display:flex;gap:10px;justify-content:flex-end;margin-top:16px" },
+    h("div", { class: "share-actions" },
       h("button", { class: "btn ghost", onClick: () => back.remove() }, "Close"),
       h("a", { class: "btn", href: `#/present/${deckId}`, onClick: () => back.remove() }, "Open viewer"),
     ),

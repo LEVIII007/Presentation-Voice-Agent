@@ -1,5 +1,6 @@
 import "./styles.css";
 
+import { h, mount } from "./dom.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderLatency } from "./views/latency.js";
 import { renderProcessing } from "./views/processing.js";
@@ -39,8 +40,14 @@ async function route() {
     }
   } catch (e) {
     console.error("Route error:", e);
-    document.getElementById("app").innerHTML =
-      `<div class="page"><div class="banner error">Something went wrong: ${e.message}</div><a href="#/">← Back</a></div>`;
+    mount(
+      h(
+        "div",
+        { class: "page", dataset: { surface: "product", subtitle: "Something went wrong" } },
+        h("div", { class: "banner error" }, `Something went wrong: ${e.message}`),
+        h("a", { href: "#/" }, "← Back"),
+      ),
+    );
   }
 }
 

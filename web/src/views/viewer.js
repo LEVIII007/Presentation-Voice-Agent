@@ -67,19 +67,37 @@ function renderCaptionContent(content) {
 }
 
 export async function renderViewer(deckId) {
-  mount(h("div", { class: "page" }, h("div", { class: "spinner" })));
+  mount(
+    h(
+      "div",
+      { class: "page viewer-loading", dataset: { surface: "viewer", subtitle: "Live presentation", chrome: "none" } },
+      h("div", { class: "spinner" }),
+    ),
+  );
 
   let deck;
   try {
     deck = await api.getDeck(deckId);
   } catch (e) {
-    mount(h("div", { class: "page" }, h("div", { class: "banner error" }, `Could not load deck: ${e.message}`), h("a", { href: "#/" }, "← All decks")));
+    mount(
+      h(
+        "div",
+        { class: "page", dataset: { surface: "viewer", subtitle: "Live presentation", chrome: "none" } },
+        h("div", { class: "banner error" }, `Could not load deck: ${e.message}`),
+        h("a", { href: "#/" }, "← All decks"),
+      ),
+    );
     return;
   }
   if (deck.status !== "ready") {
-    mount(h("div", { class: "page" },
-      h("div", { class: "banner info" }, "This deck isn't ready to present yet."),
-      h("a", { class: "btn", href: `#/deck/${deckId}/processing` }, "See progress")));
+    mount(
+      h(
+        "div",
+        { class: "page", dataset: { surface: "viewer", subtitle: "Live presentation", chrome: "none" } },
+        h("div", { class: "banner info" }, "This deck isn't ready to present yet."),
+        h("a", { class: "btn", href: `#/deck/${deckId}/processing` }, "See progress"),
+      ),
+    );
     return;
   }
 
@@ -117,12 +135,14 @@ export async function renderViewer(deckId) {
     onClick: togglePresentationFlow,
   }, flowIcon, flowName);
   stageFlowBtn.hidden = true;
-  const stage = h("div", { class: "stage" }, prevBtn, breadcrumb, stageInner, nextBtn);
+  const stage = h("div", { class: "stage" }, h("div", { class: "stage-aura", "aria-hidden": "true" }), prevBtn, breadcrumb, stageInner, nextBtn);
 
   const statusPill = h("div", { class: "control-status offline" },
     h("span", { class: "status-indicator-dot", "aria-hidden": "true" }),
     h("span", { id: "st-text", class: "status-label" }, "Offline"));
   const caption = h("div", { class: "caption" }, renderCaptionContent(latestCaption));
+  const metaDeck = h("div", { class: "viewer-meta-title" }, deck.title || "Presentation");
+  const metaCount = h("div", { class: "viewer-meta-count" }, `1 / ${total}`);
 
   const startIcon = iconEl("play");
   const startName = controlNameEl("Start");
@@ -143,9 +163,21 @@ export async function renderViewer(deckId) {
     onClick: toggleCaptions,
   }, capIcon, capName);
   const controls = h("div", { class: "control-panel" }, capToggle, stageFlowBtn, startBtn, statusPill);
+  const hint = h("div", { class: "hint" }, "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo.");
   const dock = h("div", { class: "dock" },
-    caption, controls,
-    h("div", { class: "hint", style: "font-size:12px;color:var(--faint)" }, "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo."),
+    h(
+      "div",
+      { class: "viewer-meta" },
+      h(
+        "div",
+        { class: "viewer-meta-copy" },
+        metaDeck,
+      ),
+      controls,
+      metaCount,
+    ),
+    caption,
+    hint,
   );
   syncCaptionsControl();
 
@@ -161,8 +193,18 @@ export async function renderViewer(deckId) {
   const qaFabCount = h("span", { class: "qa-fab-count" }, "0");
   const qaFab = h("button", { class: "qa-fab", type: "button", title: "Your questions", onClick: openQa },
     "Questions", qaFabCount);
+  const railHome = h(
+    "a",
+    { class: "rail-home", href: "#/", title: "Back to all decks" },
+    h("span", { class: "rail-home-label" }, "Home Nav"),
+  );
+  rail.append(railHome);
+  const mobileHome = h("a", { class: "viewer-home-mobile", href: "#/" }, "Home Nav");
 
-  const viewer = h("div", { class: "viewer" }, rail, stage, qaPanel, dock, qaBackdrop, qaFab);
+  const viewer = h("div", {
+    class: "viewer",
+    dataset: { surface: "viewer", subtitle: deck.title || "Live presentation", chrome: "none" },
+  }, rail, stage, qaPanel, dock, qaBackdrop, qaFab, mobileHome);
   mount(viewer);
 
   // --- Rail ---
@@ -192,8 +234,9 @@ export async function renderViewer(deckId) {
       }
       slideCard.classList.remove("swap");
     }, 180);
+    metaCount.textContent = `${n} / ${total}`;
     [...rail.children].forEach((c) => c.classList.toggle("active", Number(c.dataset.n) === n));
-    const active = rail.children[n - 1];
+    const active = rail.querySelector(`[data-n="${n}"]`);
     if (active) active.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
@@ -313,6 +356,11 @@ export async function renderViewer(deckId) {
     flowIcon.innerHTML = presentationPaused ? ICONS.play : ICONS.pause;
     flowName.textContent = presentationPaused ? "Resume" : "Pause";
     stageFlowBtn.classList.toggle("paused", presentationPaused);
+    if (hint) {
+      hint.textContent = presentationPaused
+        ? "Tip: the microphone is muted while paused, so side conversations won't wake the presenter."
+        : "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo.";
+    }
   }
 
   // --- Connect / disconnect ---
@@ -333,11 +381,13 @@ export async function renderViewer(deckId) {
     try {
       const sent = session.setPresentationFlow(action);
       if (!sent) throw new Error(`Could not ${action} the presentation right now.`);
+      const micUpdated = session.setMicEnabled(!nextPaused);
+      if (!micUpdated) throw new Error(`Could not ${action === "pause" ? "mute" : "re-enable"} the microphone.`);
       presentationPaused = nextPaused;
       renderStatus();
       setCaption(
         presentationPaused
-          ? "Presentation paused. Speak to ask a question, or resume when you're ready."
+          ? "Presentation paused. The microphone is muted until you resume."
           : "Presentation resumed. It will continue from where it left off.",
       );
     } catch (e) {
@@ -430,7 +480,6 @@ export async function renderViewer(deckId) {
         h("p", {}, `That's the end of "${deck.title}". Want to run it again, or reach out to the creator?`),
         h("div", { style: "display:flex;gap:10px;justify-content:center;flex-wrap:wrap" },
           h("button", { class: "btn", onClick: () => { overlay.remove(); go(1); startSession(); } }, "▶ Start again"),
-          h("a", { class: "btn ghost", href: "mailto:?subject=About your presentation" }, "Contact / book a call"),
           h("a", { class: "btn ghost", href: "#/" }, "All decks"),
         ),
       ));

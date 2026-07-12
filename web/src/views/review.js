@@ -11,59 +11,9 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-function personaCard(deck) {
-  const hint = h("div", { class: "save-hint" }, "");
-  const helperText = h("div", { class: "field-note" });
-
-  function syncHelper(value) {
-    const trimmed = value.trim();
-    helperText.textContent = trimmed
-      ? "Using your custom persona. Clear it any time to fall back to the suggested one."
-      : deck.persona
-        ? "Leave this blank to use the suggested persona below."
-        : "Optional. Add a persona if you want the presenter to sound a specific way.";
-  }
-
-  const save = debounce(async (value) => {
-    hint.textContent = "Saving…";
-    hint.classList.remove("saved");
-    try {
-      await api.patchDeck(deck.id, { persona_override: value });
-      deck.persona_override = value;
-      hint.textContent = "Saved";
-      hint.classList.add("saved");
-    } catch (e) {
-      hint.textContent = `Save failed: ${e.message}`;
-    }
-  }, 700);
-
-  const area = h("textarea", {
-    rows: "4",
-    placeholder: "Example: Present like a calm product leader who sounds confident, clear, and conversational.",
-  }, deck.persona_override || "");
-  syncHelper(area.value);
-  area.addEventListener("input", () => {
-    syncHelper(area.value);
-    save(area.value);
-  });
-
-  return h(
-    "div",
-    { class: "deck-setting-card" },
-    h("label", { class: "form-label" }, "Presenter persona (optional)"),
-    h("div", { class: "field-note" }, "This shapes how the presenter sounds live, without reprocessing the deck."),
-    helperText,
-    area,
-    hint,
-    deck.persona
-      ? h("div", { class: "persona-suggestion" }, h("strong", {}, "Suggested persona"), deck.persona)
-      : null,
-  );
-}
-
 function slideRow(deckId, slide) {
   const hint = h("div", { class: "save-hint" }, "");
-  const flag = slide.status === "failed" ? h("div", { class: "flag" }, "⚠ Narration failed for this slide — please fill it in.") : null;
+  const flag = slide.status === "failed" ? h("div", { class: "flag" }, "Narration failed for this slide. Please fill it in before presenting.") : null;
 
   const save = debounce(async (field, value) => {
     hint.textContent = "Saving…";
@@ -88,9 +38,21 @@ function slideRow(deckId, slide) {
     : h("div", { style: "display:flex;align-items:center;justify-content:center;height:100%;color:var(--faint);font-size:13px" }, "No image");
 
   return h(
-    "div",
+    "article",
     { class: "review-row" },
-    h("div", {}, h("div", { class: "slide-num", style: "margin-bottom:8px" }, `Slide ${slide.number}`), h("div", { class: "review-img" }, img)),
+    h(
+      "div",
+      { class: "review-media" },
+      h(
+        "div",
+        { class: "review-media-head" },
+        h("div", { class: "slide-num review-slide-num" }, `Slide ${slide.number}`),
+        slide.status === "failed"
+          ? h("span", { class: "mini-status mini-status-failed" }, "Needs attention")
+          : h("span", { class: "mini-status" }, "Draft ready"),
+      ),
+      h("div", { class: "review-img" }, img),
+    ),
     h(
       "div",
       { class: "review-fields" },
@@ -105,7 +67,10 @@ function slideRow(deckId, slide) {
 }
 
 export async function renderReview(deckId) {
-  const page = h("div", { class: "page" });
+  const page = h("div", {
+    class: "page review-page",
+    dataset: { surface: "product", subtitle: "Narration review" },
+  });
   mount(page);
   page.append(h("div", { class: "crumb" }, h("a", { href: "#/" }, "← All decks")), h("div", { class: "spinner" }));
 
@@ -125,22 +90,36 @@ export async function renderReview(deckId) {
   const header = [
     h("div", { class: "crumb" }, h("a", { href: "#/" }, "← All decks")),
     h(
-      "div",
-      { class: "page-head" },
-      h("div", {}, h("h2", {}, deck.title), h("div", { class: "sub" }, `${deck.slides.length} slides · review the AI's narration, then present or share`)),
+      "section",
+      { class: "review-hero" },
       h(
         "div",
-        { style: "display:flex;gap:10px" },
-        h("button", { class: "btn ghost", onClick: () => navigate(`#/present/${deckId}`) }, "▶ Preview as viewer"),
-        h("button", { class: "btn", onClick: () => openShareModal(deckId) }, "Share"),
+        { class: "review-hero-copy" },
+        h("div", { class: "eyebrow" }, "Narration review"),
+        h("h1", { class: "section-title" }, deck.title),
+        h(
+          "p",
+          { class: "section-copy" },
+          `${deck.slides.length} slides. Fine-tune what the presenter says, then preview or share the live deck.`,
+        ),
+        h(
+          "div",
+          { class: "review-stats" },
+          h("span", { class: "meta-chip" }, `${deck.slides.length} slides`),
+        ),
+      ),
+      h(
+        "div",
+        { class: "review-hero-actions" },
+        h("button", { class: "btn ghost", onClick: () => navigate(`#/present/${deckId}`) }, "▶ Start Presentation"),
       ),
     ),
   ];
-  if (failed) header.push(h("div", { class: "banner info" }, `${failed} slide(s) need attention — look for the ⚠ flags below.`));
-  header.push(h("div", { class: "banner info" }, "Edits save automatically. The presenter speaks and answers questions from these notes, and you can optionally tune their persona below."));
-  page.replaceChildren(...header, personaCard(deck));
+  if (failed) header.push(h("div", { class: "banner info" }, `${failed} slide(s) need attention. Review the marked slides before presenting.`));
+  header.push(h("div", { class: "banner info" }, "Edits save automatically. The presenter speaks and answers questions from these notes."));
+  page.replaceChildren(...header);
 
-  const list = h("div", {});
+  const list = h("div", { class: "review-list" });
   deck.slides.forEach((s) => list.append(slideRow(deckId, s)));
   page.append(list);
 }
