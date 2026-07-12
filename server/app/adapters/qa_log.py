@@ -55,6 +55,10 @@ If genuine, also return:
   It MUST stand on its own a week later, without the surrounding transcript. Fix obvious
   speech-to-text errors using the reply and context, but stay faithful to their intent —
   never invent a question they did not ask.
+- The final saved question must read like something a teammate could revisit later with no
+  extra context. Do NOT leave unresolved referents like "this", "that", "it", "they",
+  "these", "those", "here", or "there" in the final wording when they point to something
+  outside the sentence. Rewrite them to the concrete noun phrase when that referent is clear.
 - Resolve vague references like "this", "that", "it", "one", "here", "direct example", or
   "more detail" ONLY when the context makes the referent clear. Use the nearest reliable
   anchor in this order: recent presenter explanation, asked-from slide topic, answered-from
@@ -65,6 +69,9 @@ If genuine, also return:
   reply. The raw reply may be cut off mid-sentence (the audience interrupted); make it read as
   a finished thought, but do NOT add facts, numbers, or claims that are not in the reply. If
   the reply is too garbled or empty to salvage an answer, set is_question=false instead.
+- The saved answer must also stand on its own later. Replace vague pronouns with explicit nouns
+  when the referent is clear from the context and reply. If you cannot make it self-contained
+  without guessing, set is_question=false.
 
 Reply with ONLY a JSON object: {"is_question": true, "question": "...", "answer": "..."}.
 When is_question is false, "question" and "answer" may be empty strings."""

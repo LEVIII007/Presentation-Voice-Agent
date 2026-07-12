@@ -76,10 +76,12 @@ def test_build_user_content_includes_slide_context_and_history():
 
 def test_system_prompt_requires_self_contained_fail_closed_questions():
     assert "MUST stand on its own a week later" in _SYSTEM
+    assert 'Do NOT leave unresolved referents like "this", "that", "it"' in _SYSTEM
     assert 'Resolve vague references like "this", "that", "it"' in _SYSTEM
     assert "asked-from slide topic" in _SYSTEM
     assert "presentation title" in _SYSTEM
     assert "If that referent is STILL ambiguous after using the context, set is_question=false." in _SYSTEM
+    assert "The saved answer must also stand on its own later." in _SYSTEM
     assert "do not" in _SYSTEM.lower() and "guess" in _SYSTEM.lower()
     print("ok: system prompt requires self-contained questions and fail-closed ambiguity handling")
 

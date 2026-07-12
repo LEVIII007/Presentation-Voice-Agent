@@ -105,30 +105,36 @@ There are {total} slides. The audience hears you through a speaker and can inter
 
 <qa_handling>
 This is your most important skill.
-- Every answer is delivered FROM the slide that best covers it. The instant a question
-  comes in, silently decide which slide in the deck above best answers it — you have all
-  the slides and their notes, so you always can.
-- If that slide is NOT the one on screen, you MUST call go_to_slide for it FIRST, then
-  answer from it. Do this on your own — the audience does NOT have to ask you to switch.
-  Never answer a question about another slide's topic while the wrong slide is showing:
-  the audience should always be looking at the slide you're talking about. Pass reason
-  "answer_question" for these jumps — they are detours, and the talk returns to its own
-  flow afterwards.
+- Every answer is delivered FROM the slide, or short 2-3 slide sequence, that best covers
+  it. The instant a question comes in, silently decide whether one slide is enough or
+  whether the clearest answer needs a short run across multiple slides.
+- If the answer lives on another slide, or across a short sequence, you MUST call
+  go_to_slide for each needed slide FIRST, then answer from it. Do this on your own —
+  the audience does NOT have to ask you to switch. Never answer a question about another
+  slide's topic while the wrong slide is showing: the audience should always be looking
+  at the slide you're talking about. Pass reason "answer_question" for these jumps —
+  they are detours, and the talk returns to its own flow afterwards.
 - Only answer without navigating when the question is about the slide already on screen,
   or is a short follow-up to what you just said.
-- Move with a brief, natural transition ("Sure, let's look at that.") — never announce
+- If you use multiple slides for one answer, move through them one by one in the cleanest
+  order, with a brief spoken bridge at each step. Use only the minimum number of slides
+  needed to make the point clearly.
+- Move with brief, natural transitions ("Sure, let's look at that.") — never announce
   slide numbers.
 - Worked examples: asked about pricing and there's a pricing slide → go there, then answer.
   Asked "what tools/tech did you use" and a slide lists the stack → go to that slide, then
   answer. Asked about results or outcomes and a later slide shows them → go there first.
 - Keep answers to 1-4 sentences — UNLESS they explicitly ask for full detail, a deep
   explanation, or to "walk through"/"explain this slide"; then give a complete, unhurried
-  explanation of that slide before stopping. After answering, stop: the presentation
-  resumes automatically from where it left off.
-- If the question pulled you AHEAD to a slide the main talk had not reached yet, close your
-  answer with a brief, natural hand-back so the audience knows the talk will continue — a
-  short line like "We'll come back to the rest in a moment." Do not do this for questions
-  about the current slide or slides already passed.
+  explanation of that slide before stopping. If the answer truly needs 2-3 slides, the
+  whole detour can be longer, but stay tight and purposeful. After answering, stop: the
+  presentation resumes automatically from where it left off.
+- Whenever a detour will hand back to the main talk, close with a brief, natural hand-back
+  so the audience knows you are returning to the main thread. If the question pulled you
+  AHEAD to a slide the main talk had not reached yet, use a line like "We'll come back to
+  the rest in a moment." If you jumped sideways or back, use a line like "That's the key
+  idea — now let's pick up where we left off." Do not do this for questions about the
+  current slide, and never phrase the hand-back as a question.
 - If they ask you to PAUSE, stop, or hold on: call set_presentation_flow with "pause",
   confirm in a few words, and wait. While paused, just answer questions.
 - If they ask to resume or continue: call set_presentation_flow with "resume" and say a
@@ -174,27 +180,53 @@ def build_kickoff_cue() -> str:
     )
 
 
-def build_advance_cue(slide_number: int, already_covered: bool = False) -> str:
+def build_advance_cue(
+    slide_number: int,
+    already_covered: bool = False,
+    returning_from_detour: bool = False,
+) -> str:
     if already_covered:
+        handback = (
+            " Open with a brief hand-back so the audience feels the return to the main flow "
+            "before you continue."
+            if returning_from_detour
+            else ""
+        )
         return (
             f"(System cue: the talk now reaches slide {slide_number}, but you ALREADY went "
-            f"over this slide earlier. Call go_to_slide with "
+            f"over this slide earlier.{handback} Call go_to_slide with "
             f"{slide_number} first to bring it back up, then do NOT re-present it from "
             f"scratch. Acknowledge that you looked at it together earlier (like 'As we saw a "
             f"moment ago...'), then add whatever you did not cover "
             f"the first time — a detail, an implication, or how it connects to the next part. "
             f"If it was already fully covered, give a one-line bridge and move on. Then stop.)"
         )
+    handback = (
+        " Open with a brief hand-back so the audience knows you are returning to the main "
+        "flow, like 'Coming back to where we left off...'."
+        if returning_from_detour
+        else ""
+    )
     return (
-        f"(System cue: present slide {slide_number} now. Call go_to_slide with "
+        f"(System cue: present slide {slide_number} now.{handback} Call go_to_slide with "
         f"{slide_number} first, then present it, then stop.)"
     )
 
 
-def build_finish_cue(slide_number: int, remainder: str) -> str:
+def build_finish_cue(
+    slide_number: int,
+    remainder: str,
+    returning_from_detour: bool = False,
+) -> str:
+    handback = (
+        " Open with a brief hand-back so the audience knows you are returning to where you "
+        "left off on this point."
+        if returning_from_detour
+        else ""
+    )
     return (
         f"(System cue: you were interrupted while presenting slide {slide_number}, and the "
-        f"audience never heard the rest of it. If slide {slide_number} is no longer on "
+        f"audience never heard the rest of it.{handback} If slide {slide_number} is no longer on "
         f"screen, call go_to_slide with {slide_number} first. Then pick up smoothly where "
         f"you were cut off — do NOT restart the slide or repeat what they already heard. "
         f'What they missed: "{remainder}". Deliver that content naturally, then stop.)'

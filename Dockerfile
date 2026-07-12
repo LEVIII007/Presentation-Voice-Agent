@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=5173 \
-    DATA_DIR=/app/server/data
+    DATA_DIR=/app/runtime-data
 
 WORKDIR /app/server
 
@@ -36,7 +36,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY server/ ./
 COPY --from=web-build /app/web/dist /app/web/dist
 
-RUN mkdir -p /app/server/data
+RUN mkdir -p /app/runtime-data
 
 EXPOSE 5173
 

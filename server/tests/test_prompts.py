@@ -1,7 +1,12 @@
 """Checks the live presenter prompt and kickoff cues."""
 
 from app.domain.models import Deck, Slide
-from app.services.prompts import build_kickoff_cue, build_system_prompt
+from app.services.prompts import (
+    build_advance_cue,
+    build_finish_cue,
+    build_kickoff_cue,
+    build_system_prompt,
+)
 
 
 def _deck() -> Deck:
@@ -81,6 +86,27 @@ def test_prompt_wraps_each_slide_in_a_tagged_block():
     print("ok: each slide is its own tagged block within <deck>")
 
 
+def test_prompt_mentions_multi_slide_answers_and_handbacks():
+    prompt = build_system_prompt(_deck())
+    assert "short 2-3 slide sequence" in prompt
+    assert "go_to_slide for each needed slide FIRST" in prompt
+    assert "returning to the main thread" in prompt
+    print("ok: prompt allows multi-slide answers and requires hand-backs")
+
+
+def test_advance_cue_can_mark_return_from_detour():
+    cue = build_advance_cue(3, returning_from_detour=True)
+    assert "returning to the main flow" in cue
+    assert "Coming back to where we left off" in cue
+    print("ok: advance cue can request a return-from-detour hand-back")
+
+
+def test_finish_cue_can_mark_return_from_detour():
+    cue = build_finish_cue(3, "The rest goes here.", returning_from_detour=True)
+    assert "returning to where you left off on this point" in cue
+    print("ok: finish cue can request a return-from-detour hand-back")
+
+
 if __name__ == "__main__":
     test_on_demand_prompt_mentions_look_at_slide()
     test_eager_prompt_preserves_current_slide_image_wording()
@@ -88,4 +114,7 @@ if __name__ == "__main__":
     test_prompt_uses_generated_persona()
     test_prompt_wraps_major_sections_in_xml_tags()
     test_prompt_wraps_each_slide_in_a_tagged_block()
+    test_prompt_mentions_multi_slide_answers_and_handbacks()
+    test_advance_cue_can_mark_return_from_detour()
+    test_finish_cue_can_mark_return_from_detour()
     print("\nAll prompt tests passed.")

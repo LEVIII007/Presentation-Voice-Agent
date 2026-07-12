@@ -8,11 +8,11 @@ services:
         required: false
     environment:
       PORT: 5173
-      DATA_DIR: /app/server/data
+      DATA_DIR: /app/runtime-data
     ports:
       - "${VOICE_SLIDES_PORT:-5173}:5173"
     volumes:
-      - voice_slides_data:/app/server/data
+      - voice_slides_data:/app/runtime-data
     restart: unless-stopped
 
 volumes:

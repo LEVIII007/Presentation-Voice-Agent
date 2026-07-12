@@ -52,11 +52,27 @@ def test_qa_detour_does_not_move_linear_progress():
     assert ps.advance() == (2, False)  # talk resumes where it left off
 
 
+def test_qa_detour_sets_one_shot_return_marker():
+    ps = make()
+    ps.advance()
+    ps.show_slide(7, navigation=False)
+    assert ps.take_returning_from_qa_detour() is True
+    assert ps.take_returning_from_qa_detour() is False
+
+
 def test_navigation_reanchors_linear_progress():
     ps = make()
     ps.advance()  # next is 2
     ps.show_slide(5, navigation=True)  # "skip to slide 5"
     assert ps.advance() == (6, False)  # watchdog does NOT replay the old spot
+
+
+def test_navigation_clears_pending_return_marker():
+    ps = make()
+    ps.advance()
+    ps.show_slide(7, navigation=False)
+    ps.show_slide(5, navigation=True)
+    assert ps.take_returning_from_qa_detour() is False
 
 
 def test_linear_return_to_a_jumped_slide_is_a_revisit():
@@ -141,15 +157,56 @@ def test_pause_while_quiet_buffers_nothing():
 # --- Q&A pairing ---
 
 
-def test_qa_pair_closes_only_after_fresh_bot_speech():
+def test_qa_pair_records_only_after_fresh_bot_speech():
     ps = make()
     ps.qa_open("What about reserves?", slide=3)
     # An assistant turn re-emitted by a barge-in has no fresh speech start.
-    assert ps.qa_take_closable("old narration text") is None
+    assert ps.qa_record_answer_turn("old narration text", slide=3) is None
     ps.qa_on_bot_speech_start()
-    pending = ps.qa_take_closable("They are ranked 24th.")
-    assert pending == {"question": "What about reserves?", "ask_slide": 3}
-    assert ps.qa_take_closable("another turn") is None  # consumed
+    snapshot = ps.qa_record_answer_turn("They are ranked 24th.", slide=3)
+    assert snapshot == {
+        "question": "What about reserves?",
+        "answer": "They are ranked 24th.",
+        "ask_slide": 3,
+        "answer_slide": 3,
+        "history": [],
+    }
+    pending = ps.qa_take_ready()
+    assert pending == snapshot
+    assert ps.qa_take_ready() is None  # consumed
+
+
+def test_qa_merges_fragmented_user_question_before_answer_starts():
+    ps = make()
+    ps.qa_open("Can you directly tell me", slide=8, history=[{"role": "assistant", "content": "Generic AI is broad and blind.", "slide": 8}])
+    ps.qa_open("how is it better than generic AI", slide=8)
+    ps.qa_open("or what Mindtickle used before?", slide=8)
+    ps.qa_on_bot_speech_start()
+    ps.qa_record_answer_turn("Mineo uses real account context and conversation signals.", slide=8)
+    pending = ps.qa_take_ready()
+    assert pending is not None
+    assert pending["question"] == (
+        "Can you directly tell me how is it better than generic AI "
+        "or what Mindtickle used before?"
+    )
+    assert pending["history"] == [
+        {"role": "assistant", "content": "Generic AI is broad and blind.", "slide": 8}
+    ]
+
+
+def test_qa_keeps_collecting_answer_turns_until_flushed():
+    ps = make()
+    ps.qa_open("How much time will it save?", slide=5)
+    ps.qa_on_bot_speech_start()
+    ps.qa_record_answer_turn("From hours of manual prep down to minutes to deploy.", slide=9)
+    ps.qa_record_answer_turn("It replaces 13 to 23 hours across research and testing.", slide=9)
+    pending = ps.qa_take_ready()
+    assert pending is not None
+    assert pending["answer"] == (
+        "From hours of manual prep down to minutes to deploy. "
+        "It replaces 13 to 23 hours across research and testing."
+    )
+    assert pending["answer_slide"] == 9
 
 
 def test_stage_cue_drops_pending_question():
@@ -157,11 +214,11 @@ def test_stage_cue_drops_pending_question():
     ps.qa_open("What about reserves?", slide=3)
     ps.qa_reset()
     ps.qa_on_bot_speech_start()
-    assert ps.qa_take_closable("narration") is None
+    assert ps.qa_record_answer_turn("narration", slide=3) is None
 
 
 def test_blank_question_does_not_arm_qa():
     ps = make()
     ps.qa_open("   ", slide=1)
     ps.qa_on_bot_speech_start()
-    assert ps.qa_take_closable("answer") is None
+    assert ps.qa_record_answer_turn("answer", slide=1) is None

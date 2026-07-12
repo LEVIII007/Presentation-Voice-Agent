@@ -5,6 +5,5 @@
 **/*.pyc
 server/.env
 server/.venv
-server/data
 web/dist
 web/node_modules

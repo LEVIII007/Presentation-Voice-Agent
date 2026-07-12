@@ -23,9 +23,17 @@ replayed slides the audience had already seen.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pipecat.utils.string import match_endofsentence
+try:
+    from pipecat.utils.string import match_endofsentence
+except ImportError:  # pragma: no cover - lightweight test environments
+    _EOS_RE = re.compile(r".*?[.!?](?:['\")\]]+)?(?:\s+|$)", re.S)
+
+    def match_endofsentence(text: str) -> int:
+        match = _EOS_RE.match(text or "")
+        return match.end() if match else -1
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -91,6 +99,10 @@ class PresentationState:
         # and Q&A jumps both count. When the linear flow later reaches one of
         # these, the presenter acknowledges it instead of repeating it verbatim.
         self.covered: set[int] = set()
+        # A Q&A detour to another slide should be followed by a short "back to
+        # where we were" hand-back when the linear talk resumes. The next
+        # autopilot cue consumes this flag.
+        self.returning_from_qa_detour = False
         # The slide the current (or most recent) completion is presenting — set
         # when an advance/finish cue goes out, released by the first user
         # speech after it. If that speech cut the narration off mid-delivery,
@@ -103,10 +115,14 @@ class PresentationState:
         # sentence onward, re-spoken verbatim on resume (no LLM round-trip).
         self.resume_text = ""
         # Q&A pairing: a question is "pending" from when it's asked until the
-        # presenter's next answer. Autopilot narration must never be logged as
-        # an answer: `answering` is armed only by a real question, and closing
-        # also requires `answer_started` — a FRESH bot-speech-start AFTER the
-        # question. Every stage cue resets this, dropping any pending pair.
+        # presenter finishes answering it. Consecutive user transcript turns
+        # before the answer starts are merged into one question so STT-split
+        # asks like "how does it" + "do that" are logged as one exchange, not
+        # as the last fragment only. Autopilot narration must never be logged
+        # as an answer: `answering` is armed only by a real question, and
+        # recording answer text also requires `answer_started` — a FRESH
+        # bot-speech-start AFTER the question. Every stage cue resets this,
+        # dropping any pending pair.
         self.qa_pending: dict[str, Any] | None = None
         self.qa_answering = False
         self.qa_answer_started = False
@@ -120,11 +136,15 @@ class PresentationState:
         wherever the flow stood before the jump, and any pending interrupted
         narration is dropped — the audience moved on. A Q&A detour
         (navigation=False) leaves both alone so the talk resumes where it was."""
+        old_current = self.current_slide
         self.current_slide = n
         self.covered.add(n)
         if navigation:
             self.next_slide = n + 1
             self.clear_interrupted()
+            self.returning_from_qa_detour = False
+        elif n != old_current:
+            self.returning_from_qa_detour = True
 
     def sync_manual_slide(self, n: int) -> None:
         """The audience flipped the slide in the browser. Mirror it so slide
@@ -145,6 +165,12 @@ class PresentationState:
         self.covered.add(n)
         self.narrating_slide = n
         return n, revisit
+
+    def take_returning_from_qa_detour(self) -> bool:
+        """True once after a Q&A slide detour, then reset."""
+        returning = self.returning_from_qa_detour
+        self.returning_from_qa_detour = False
+        return returning
 
     def begin_closing(self) -> bool:
         """True exactly once, when the talk has run out of slides. Autopilot
@@ -211,9 +237,29 @@ class PresentationState:
         q = (question or "").strip()
         if not q:
             return
-        # `history` is a snapshot of the recent conversation, carried through to
-        # the extractor so it can judge intent in context (see qa_take_closable).
-        self.qa_pending = {"question": q, "ask_slide": slide, "history": history or []}
+        # Merge consecutive user transcript turns into one pending question
+        # until the presenter actually starts answering.
+        if self.qa_pending is not None and not self.qa_answer_started:
+            parts = self.qa_pending.setdefault("question_parts", [])
+            if not parts or parts[-1] != q:
+                parts.append(q)
+            self.qa_pending["question"] = " ".join(
+                part for part in parts if str(part or "").strip()
+            ).strip()
+            return
+        # `history` is a snapshot of the recent conversation before the FIRST
+        # fragment of this ask, carried through so the extractor can judge
+        # intent in context and resolve short follow-ups if they are actually
+        # clear from what just happened.
+        self.qa_pending = {
+            "question_parts": [q],
+            "question": q,
+            "ask_slide": slide,
+            "history": history or [],
+            "answer_parts": [],
+            "answer": "",
+            "answer_slide": None,
+        }
         self.qa_answering = True
         self.qa_answer_started = False
 
@@ -226,15 +272,45 @@ class PresentationState:
         if self.qa_answering:
             self.qa_answer_started = True
 
-    def qa_take_closable(self, answer: str) -> dict[str, Any] | None:
-        """If the assistant turn `answer` closes a pending question, pop and
-        return that pending pair; otherwise None. A barge-in that cut
-        narration re-emits an older turn with no fresh bot-speech-start, so
-        it never closes a pair."""
+    def qa_record_answer_turn(self, answer: str, slide: int) -> dict[str, Any] | None:
+        """Append one assistant transcript turn to the pending answer, if this
+        really is the fresh answer to a real audience question. A barge-in that
+        cut narration re-emits an older turn with no fresh bot-speech-start, so
+        it never records answer text."""
         if not (self.qa_answering and self.qa_answer_started and self.qa_pending):
+            return None
+        a = (answer or "").strip()
+        if not a:
+            return None
+        parts = self.qa_pending.setdefault("answer_parts", [])
+        if not parts or parts[-1] != a:
+            parts.append(a)
+        self.qa_pending["answer"] = " ".join(
+            part for part in parts if str(part or "").strip()
+        ).strip()
+        self.qa_pending["answer_slide"] = slide
+        return {
+            "question": self.qa_pending["question"],
+            "answer": self.qa_pending["answer"],
+            "ask_slide": self.qa_pending["ask_slide"],
+            "answer_slide": self.qa_pending["answer_slide"],
+            "history": list(self.qa_pending.get("history", [])),
+        }
+
+    def qa_take_ready(self) -> dict[str, Any] | None:
+        """Pop the pending Q&A exchange once the answer has settled."""
+        if self.qa_pending is None:
             return None
         pending = self.qa_pending
         self.qa_reset()
-        if not (answer or "").strip():
+        question = str(pending.get("question", "") or "").strip()
+        answer = str(pending.get("answer", "") or "").strip()
+        if not question or not answer:
             return None
-        return pending
+        return {
+            "question": question,
+            "answer": answer,
+            "ask_slide": pending.get("ask_slide"),
+            "answer_slide": pending.get("answer_slide"),
+            "history": list(pending.get("history", [])),
+        }

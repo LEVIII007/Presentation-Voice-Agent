@@ -21,6 +21,7 @@ from loguru import logger
 load_dotenv()
 
 from .api import decks, latency, system
+from .bootstrap_data import merge_bundled_data, prime_runtime_data
 from .core.container import build_container
 from .core.settings import Settings
 from .seed import seed_demo_deck
@@ -29,8 +30,11 @@ from .seed import seed_demo_deck
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
+    bundled_data_dir = Path(__file__).resolve().parents[1] / "data"
+    prime_runtime_data(settings.data_dir, bundled_data_dir)
     container = await build_container(settings)
     app.state.container = container
+    merge_bundled_data(settings.data_dir, bundled_data_dir)
     await seed_demo_deck(container.repo)
     await container.worker.start()
     logger.info(
