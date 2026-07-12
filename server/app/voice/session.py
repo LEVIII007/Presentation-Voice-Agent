@@ -97,6 +97,7 @@ _ADVANCE_QUIET_SECS = 1.6
 _ADVANCE_QUIET_AFTER_USER_SECS = 4.0
 _USER_RECENT_SECS = 6.0
 _EXPECT_RUN_TIMEOUT_SECS = 10.0  # self-heal if an expected completion never starts
+_QA_SETTLE_SECS = 2.0  # let short answer follow-through land before logging
 
 
 def _slide_change_frame(slide_number: int) -> RTVIServerMessageFrame:
@@ -571,9 +572,13 @@ class VoiceSessionRunner:
                 # straight into context, never through STT). The assistant turn
                 # that follows a pending question is its answer.
                 if msg.role == "user":
+                    qa_cancel_settle()
+                    if ps.qa_answer_started:
+                        await qa_flush_ready()
                     ps.qa_open(msg.content, ps.current_slide, history)
                 elif msg.role == "assistant":
-                    qa_try_close(msg.content, ps.current_slide)
+                    if ps.qa_record_answer_turn(msg.content, ps.current_slide) is not None:
+                        qa_schedule_settle()
 
         pipeline = Pipeline(
             [
@@ -638,6 +643,7 @@ class VoiceSessionRunner:
 
         # --- Q&A extraction runs off the voice path; entries push when ready ---
         qa_tasks: set[asyncio.Task] = set()
+        qa_settle_task: asyncio.Task | None = None
 
         async def process_qa(
             question: str,
@@ -682,14 +688,15 @@ class VoiceSessionRunner:
             )
             logger.info(f"Q&A logged: {result.question!r} (slide {ask_slide}->{answer_slide})")
 
-        def qa_try_close(answer: str, answer_slide: int) -> None:
-            pending = ps.qa_take_closable(answer)
+        async def qa_flush_ready() -> None:
+            pending = ps.qa_take_ready()
             if pending is None:
                 return
+            answer_slide = pending.get("answer_slide") or pending["ask_slide"]
             t = asyncio.create_task(
                 process_qa(
                     pending["question"],
-                    answer.strip(),
+                    pending["answer"],
                     pending["ask_slide"],
                     answer_slide,
                     pending.get("history", []),
@@ -697,6 +704,28 @@ class VoiceSessionRunner:
             )
             qa_tasks.add(t)
             t.add_done_callback(qa_tasks.discard)
+
+        def qa_cancel_settle() -> None:
+            nonlocal qa_settle_task
+            if qa_settle_task is not None:
+                qa_settle_task.cancel()
+                qa_settle_task = None
+
+        def qa_schedule_settle() -> None:
+            nonlocal qa_settle_task
+            qa_cancel_settle()
+
+            async def _settle_after_delay() -> None:
+                nonlocal qa_settle_task
+                try:
+                    await asyncio.sleep(_QA_SETTLE_SECS)
+                    await qa_flush_ready()
+                except asyncio.CancelledError:
+                    return
+                finally:
+                    qa_settle_task = None
+
+            qa_settle_task = asyncio.create_task(_settle_after_delay(), name="qa-settle")
 
         # --- Tool handler: push the slide change to the browser, feed notes back ---
         async def handle_go_to_slide(params) -> None:
@@ -791,6 +820,8 @@ class VoiceSessionRunner:
 
         # --- Stage directions: append a cue to the context and trigger a run ---
         async def send_cue(text: str) -> None:
+            qa_cancel_settle()
+            await qa_flush_ready()
             ps.qa_reset()  # a stage cue drives autopilot narration, never an answer
             clear_temporary_slide_image(context.messages, slide_image_state)
             context.messages.append({"role": "user", "content": text})
@@ -910,14 +941,22 @@ class VoiceSessionRunner:
                 finish = ps.take_interrupted()
                 if finish is not None:
                     n, remainder = finish
+                    returning = ps.take_returning_from_qa_detour()
                     events.append(
                         {"type": "auto_finish", "slide": n, "timestamp": time_now_iso8601()}
                     )
-                    await send_cue(build_finish_cue(n, remainder))
+                    await send_cue(
+                        build_finish_cue(
+                            n,
+                            remainder,
+                            returning_from_detour=returning,
+                        )
+                    )
                     continue
                 advance = ps.advance()
                 if advance is not None:
                     n, revisit = advance
+                    returning = ps.take_returning_from_qa_detour()
                     events.append(
                         {
                             "type": "auto_advance",
@@ -926,7 +965,13 @@ class VoiceSessionRunner:
                             "timestamp": time_now_iso8601(),
                         }
                     )
-                    await send_cue(build_advance_cue(n, already_covered=revisit))
+                    await send_cue(
+                        build_advance_cue(
+                            n,
+                            already_covered=revisit,
+                            returning_from_detour=returning,
+                        )
+                    )
                 elif ps.begin_closing():
                     events.append({"type": "closing", "timestamp": time_now_iso8601()})
                     await send_cue(build_closing_cue())
@@ -938,8 +983,12 @@ class VoiceSessionRunner:
             await runner.run(task)
         finally:
             watchdog.cancel()
-            for t in list(qa_tasks):
-                t.cancel()
+            qa_cancel_settle()
+            await qa_flush_ready()
+            if qa_tasks:
+                _done, pending = await asyncio.wait(list(qa_tasks), timeout=3.0)
+                for t in pending:
+                    t.cancel()
             try:
                 await self._sessions.finish(session_id, turns, events)
             except Exception:
