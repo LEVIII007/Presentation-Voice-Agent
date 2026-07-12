@@ -1410,6 +1410,7 @@ textarea {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1439,13 +1440,20 @@ textarea {
 }
 
 .slide-card:has(img) {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   padding: 8px;
   min-height: 0;
+  align-items: center;
 }
 
 .slide-card img {
-  width: 100%;
-  max-height: calc(100vh - 360px);
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 20px;
   display: block;
@@ -1601,7 +1609,8 @@ textarea {
 
 .caption {
   width: min(100%, 1220px);
-  min-height: 110px;
+  min-height: 112px;
+  height: 112px;
   padding: 18px 24px 20px;
   border-radius: 26px;
   border: 1px solid rgba(172, 188, 228, 0.15);
@@ -1616,6 +1625,7 @@ textarea {
 
 .caption-line {
   width: 100%;
+  min-height: 0;
   display: flex;
   align-items: flex-start;
   gap: 14px;
@@ -1643,6 +1653,8 @@ textarea {
   flex: 1 1 auto;
   font-size: clamp(17px, 0.74vw + 12px, 22px);
   line-height: 1.4;
+  max-height: calc(1.4em * 2);
+  overflow: hidden;
   color: var(--viewer-text);
   letter-spacing: -0.01em;
   word-break: break-word;
@@ -2408,7 +2420,8 @@ textarea {
   }
 
   .caption {
-    min-height: 92px;
+    min-height: 98px;
+    height: 98px;
     padding: 14px 15px 15px;
     border-radius: 18px;
   }

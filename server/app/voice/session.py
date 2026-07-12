@@ -36,6 +36,7 @@ from pipecat.frames.frames import (
     LLMRunFrame,
     LLMTextFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -78,6 +79,7 @@ from ..services.prompts import (
     build_kickoff_cue,
     build_system_prompt,
 )
+from .history import recent_turns as _recent_turns
 from .latency import LatencyObserver
 from .manager import ConnectionManager
 from .slide_images import (
@@ -102,13 +104,6 @@ def _slide_change_frame(slide_number: int) -> RTVIServerMessageFrame:
     return RTVIServerMessageFrame(
         data={"message_type": "go_to_slide", "slide": slide_number}
     )
-
-
-def _recent_turns(turns: list[dict], n: int = 5) -> list[dict]:
-    """A small snapshot of the last few transcript turns ({role, content}),
-    handed to the Q&A extractor as context for judging a question's intent."""
-    return [{"role": t["role"], "content": t["content"]} for t in turns[-n:]]
-
 
 def _last_assistant_text(messages: list) -> str:
     """The most recent assistant turn's spoken text, used to replay on resume."""
@@ -267,19 +262,61 @@ class _ActivityWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-class _CaptionWordAligner(FrameProcessor):
-    """Sits between tts and transport.output(). WordTTSService stamps each
-    TTSTextFrame with a pts anchored at the *synthesis* start of its sentence,
-    and the transport releases pts-frames on the wall clock. Synthesis runs
-    several times faster than playback, so over a multi-sentence narration the
-    words are released — and bot-tts-text captions sent — further and further
-    ahead of their audio. Clearing pts turns the words into plain sync frames
-    that ride the transport's audio queue instead: each one is pushed (and its
-    caption emitted) exactly when the audio around it is written out."""
+class _CaptionSyncProcessor(FrameProcessor):
+    """Sits between tts and transport.output(). Both TTS adapters (Azure via
+    native word-boundary events, Cartesia natively) are WordTTSService
+    subclasses: each spoken word arrives as its own TTSTextFrame, stamped with
+    `frame.pts` = (wall-clock time synthesis reached this sentence's first
+    audio) + (the word's offset within that sentence's own audio). Synthesis
+    runs several times faster than playback, so on a multi-sentence turn each
+    sentence's wall-clock anchor lands earlier and earlier relative to when
+    its audio is actually heard — frame.pts drifts arbitrarily far ahead the
+    longer the narration runs and can't be used directly for caption timing
+    (nor can the client reconstruct it after the fact from packet arrival —
+    the transport's playback buffer depth grows unboundedly under network
+    jitter, so "when did this arrive" doesn't track "when is this heard").
+
+    The fix: recover each word's offset *within its own sentence's audio* by
+    subtracting that sentence's first word's pts (the wall-clock anchor is
+    constant per sentence, so it cancels out) and send that pts_offset to the
+    browser explicitly, tagged with an utterance_id per sentence. The browser
+    anchors once per utterance — immediately if the bot is already speaking
+    (this sentence queues straight after the previous one), or at
+    BotStartedSpeaking if it's the first sentence of a fresh turn — then
+    reveals each word with a plain setTimeout(pts_offset - elapsed). One
+    ground-truth number per word, one clock per utterance, no continuous
+    playback-position inference required.
+
+    The original TTSTextFrame still has its pts cleared and is forwarded
+    unchanged: downstream taps (_ActivityWatcher's spoken_text, the assistant
+    transcript) still need it to arrive in sync with the audio it describes,
+    which is unrelated to what gets shown as a caption."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._utterance_id = 0
+        self._sentence_base_pts: int | None = None
 
     async def process_frame(self, frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, TTSTextFrame):
+        if isinstance(frame, TTSStartedFrame):
+            self._utterance_id += 1
+            self._sentence_base_pts = None
+        elif isinstance(frame, TTSTextFrame):
+            if self._sentence_base_pts is None:
+                self._sentence_base_pts = frame.pts or 0
+            offset_secs = ((frame.pts or 0) - self._sentence_base_pts) / 1_000_000_000
+            await self.push_frame(
+                RTVIServerMessageFrame(
+                    data={
+                        "message_type": "caption_word",
+                        "text": frame.text,
+                        "pts_offset": round(offset_secs, 4),
+                        "utterance_id": self._utterance_id,
+                    }
+                ),
+                direction,
+            )
             frame.pts = None
         await self.push_frame(frame, direction)
 
@@ -549,7 +586,7 @@ class VoiceSessionRunner:
                 _GenTextTap(state),  # full generated text, ahead of playback
                 SentenceAggregator(),  # smoother TTS: send whole sentences, not fragments
                 tts,
-                _CaptionWordAligner(),  # word captions ride the audio queue, not the wall clock
+                _CaptionSyncProcessor(),  # explicit per-word pts_offset, sent to the browser
                 transport.output(),
                 _ActivityWatcher(
                     state,
@@ -609,15 +646,21 @@ class VoiceSessionRunner:
             answer_slide: int,
             history: list[dict],
         ) -> None:
-            slide_title = ""
+            ask_slide_title = ""
             if 1 <= ask_slide <= slide_total:
-                slide_title = deck.slides[ask_slide - 1].title
+                ask_slide_title = deck.slides[ask_slide - 1].title
+            answer_slide_title = ""
+            if 1 <= answer_slide <= slide_total:
+                answer_slide_title = deck.slides[answer_slide - 1].title
             try:
                 result = await self._qa_extractor.extract(
                     utterance=question,
                     reply=answer,
                     deck_title=deck.title,
-                    slide_title=slide_title,
+                    ask_slide_number=ask_slide,
+                    ask_slide_title=ask_slide_title,
+                    answer_slide_number=answer_slide,
+                    answer_slide_title=answer_slide_title,
                     history=history,
                 )
             except Exception:

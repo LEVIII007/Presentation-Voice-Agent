@@ -134,14 +134,18 @@ class QAExtractor(Protocol):
         utterance: str,
         reply: str,
         deck_title: str = "",
-        slide_title: str = "",
+        ask_slide_number: int | None = None,
+        ask_slide_title: str = "",
+        answer_slide_number: int | None = None,
+        answer_slide_title: str = "",
         history: Optional[list[dict]] = None,
     ) -> Optional[QAExtraction]:
         """Turn one raw (audience utterance, presenter reply) pair into a clean
         Q&A log entry, or None if it was not a genuine question about the talk.
 
-        Context helps the judgment: `deck_title` and `slide_title` say what is
-        being presented, and `history` (recent {role, content} turns, oldest
-        first) shows what just happened — so a reaction to the presenter stalling
-        ("what happened?") can be told apart from a real content question."""
+        Context helps the judgment: `deck_title`, the ask/answer slide metadata,
+        and `history` (recent {role, content, slide} turns, oldest first) show
+        what just happened — so a reaction to the presenter stalling ("what
+        happened?") can be told apart from a real content question, and vague
+        follow-ups can be rewritten only when their referent is actually clear."""
         ...

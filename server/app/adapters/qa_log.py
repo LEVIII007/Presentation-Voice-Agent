@@ -10,17 +10,21 @@ a little latency here is fine. Same Azure OpenAI deployment as narration.
 from __future__ import annotations
 
 import json
-from typing import Optional
+import logging
+from typing import Any, Optional
 
-from loguru import logger
-from openai import AsyncAzureOpenAI
+try:
+    from loguru import logger
+except ImportError:  # pragma: no cover - fallback for lightweight test environments
+    logger = logging.getLogger(__name__)
 
 from ..domain.models import QAExtraction
 
 _SYSTEM = """You curate a live "questions the audience asked" log for people watching a spoken
 slide presentation. You are given ONE exchange — what an audience member said (from
 speech-to-text, so it may be mis-transcribed or garbled) and how the presenter replied — plus
-CONTEXT: what the talk is about, the current slide, and the recent conversation.
+CONTEXT: what the talk is about, which slide they asked from, which slide answered it, and the
+recent conversation.
 
 Decide ONE thing: was this a genuine question or request about the PRESENTATION'S SUBJECT
 MATTER — the content on the slides — worth keeping in a log the viewer will revisit later?
@@ -48,8 +52,15 @@ give an example, simplify, or justify SOMETHING IN THE TALK — even if short or
 
 If genuine, also return:
 - "question": a clean, concise one-line version of what they asked, in natural question form.
-  Fix obvious speech-to-text errors using the reply and context, but stay faithful to their
-  intent — never invent a question they did not ask.
+  It MUST stand on its own a week later, without the surrounding transcript. Fix obvious
+  speech-to-text errors using the reply and context, but stay faithful to their intent —
+  never invent a question they did not ask.
+- Resolve vague references like "this", "that", "it", "one", "here", "direct example", or
+  "more detail" ONLY when the context makes the referent clear. Use the nearest reliable
+  anchor in this order: recent presenter explanation, asked-from slide topic, answered-from
+  slide topic, then presentation title.
+- If that referent is STILL ambiguous after using the context, set is_question=false. Do not
+  guess. Do not broaden the question to a generic deck topic just to keep it.
 - "answer": a concise, self-contained answer of 1-2 sentences, based ONLY on the presenter's
   reply. The raw reply may be cut off mid-sentence (the audience interrupted); make it read as
   a finished thought, but do NOT add facts, numbers, or claims that are not in the reply. If
@@ -59,29 +70,98 @@ Reply with ONLY a JSON object: {"is_question": true, "question": "...", "answer"
 When is_question is false, "question" and "answer" may be empty strings."""
 
 
-def _format_context(deck_title: str, slide_title: str, history: Optional[list[dict]]) -> str:
+def _truncate(text: str, limit: int = 300) -> str:
+    text = str(text or "").strip().replace("\n", " ")
+    if len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+def _format_slide_ref(prefix: str, number: int | None, title: str) -> str | None:
+    bits: list[str] = []
+    if number is not None:
+        bits.append(f"Slide {number}")
+    title = str(title or "").strip()
+    if title:
+        bits.append(f'"{title}"')
+    if not bits:
+        return None
+    return f"{prefix}: {' — '.join(bits)}"
+
+
+def _format_context(
+    deck_title: str,
+    ask_slide_number: int | None,
+    ask_slide_title: str,
+    answer_slide_number: int | None,
+    answer_slide_title: str,
+    history: Optional[list[dict]],
+) -> str:
     lines: list[str] = []
     if deck_title:
         lines.append(f'PRESENTATION: "{deck_title}"')
-    if slide_title:
-        lines.append(f'CURRENT SLIDE: "{slide_title}"')
+    ask_slide = _format_slide_ref("ASKED ON", ask_slide_number, ask_slide_title)
+    if ask_slide:
+        lines.append(ask_slide)
+    answer_slide = _format_slide_ref("ANSWERED ON", answer_slide_number, answer_slide_title)
+    if answer_slide:
+        lines.append(answer_slide)
     turns = [t for t in (history or []) if isinstance(t, dict) and str(t.get("content", "")).strip()]
     if turns:
         lines.append("RECENT CONVERSATION (oldest first, context only):")
         for t in turns:
             role = "Presenter" if t.get("role") == "assistant" else "Audience"
-            content = str(t.get("content", "")).strip().replace("\n", " ")
-            if len(content) > 300:
-                content = content[:300] + "…"
-            lines.append(f"- {role}: {content}")
+            content = _truncate(str(t.get("content", "")))
+            slide = t.get("slide")
+            if isinstance(slide, int):
+                lines.append(f"- {role} (slide {slide}): {content}")
+            else:
+                lines.append(f"- {role}: {content}")
     return "\n".join(lines)
 
 
+def _build_user_content(
+    *,
+    utterance: str,
+    reply: str,
+    deck_title: str = "",
+    ask_slide_number: int | None = None,
+    ask_slide_title: str = "",
+    answer_slide_number: int | None = None,
+    answer_slide_title: str = "",
+    history: Optional[list[dict]] = None,
+) -> str:
+    context = _format_context(
+        deck_title,
+        ask_slide_number,
+        ask_slide_title,
+        answer_slide_number,
+        answer_slide_title,
+        history,
+    )
+    return (
+        (f"{context}\n\n" if context else "")
+        + f'AUDIENCE SAID:\n"{utterance}"\n\nPRESENTER REPLIED:\n"{reply}"'
+    )
+
+
 class AzureQAExtractor:
-    def __init__(self, *, api_key: str, endpoint: str, api_version: str, deployment: str):
-        self._client = AsyncAzureOpenAI(
-            api_key=api_key, azure_endpoint=endpoint, api_version=api_version
-        )
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        endpoint: str,
+        api_version: str,
+        deployment: str,
+        client: Any | None = None,
+    ):
+        if client is None:
+            from openai import AsyncAzureOpenAI
+
+            client = AsyncAzureOpenAI(
+                api_key=api_key, azure_endpoint=endpoint, api_version=api_version
+            )
+        self._client = client
         self._deployment = deployment
 
     async def extract(
@@ -90,17 +170,25 @@ class AzureQAExtractor:
         utterance: str,
         reply: str,
         deck_title: str = "",
-        slide_title: str = "",
+        ask_slide_number: int | None = None,
+        ask_slide_title: str = "",
+        answer_slide_number: int | None = None,
+        answer_slide_title: str = "",
         history: Optional[list[dict]] = None,
     ) -> Optional[QAExtraction]:
         utterance = (utterance or "").strip()
         reply = (reply or "").strip()
         if not utterance or not reply:
             return None
-        context = _format_context(deck_title, slide_title, history)
-        user_content = (
-            (f"{context}\n\n" if context else "")
-            + f'AUDIENCE SAID:\n"{utterance}"\n\nPRESENTER REPLIED:\n"{reply}"'
+        user_content = _build_user_content(
+            utterance=utterance,
+            reply=reply,
+            deck_title=deck_title,
+            ask_slide_number=ask_slide_number,
+            ask_slide_title=ask_slide_title,
+            answer_slide_number=answer_slide_number,
+            answer_slide_title=answer_slide_title,
+            history=history,
         )
         # gpt-5-mini: no custom temperature; leave headroom for reasoning tokens.
         resp = await self._client.chat.completions.create(
