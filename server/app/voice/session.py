@@ -98,6 +98,18 @@ _ADVANCE_QUIET_AFTER_USER_SECS = 4.0
 _USER_RECENT_SECS = 6.0
 _EXPECT_RUN_TIMEOUT_SECS = 10.0  # self-heal if an expected completion never starts
 _QA_SETTLE_SECS = 2.0  # let short answer follow-through land before logging
+# Beat pacing: the MODEL decides where a pause belongs and how long it is — by
+# writing the TTS backend's own pause markup directly into its narration (see
+# the presentation-flow prompt), wherever a brief pause would feel natural.
+# That markup is just text: it rides straight through this pipeline like any
+# other narration and the backend's TTS engine renders the pause itself, so no
+# custom frame handling is needed here at all. build_system_prompt is only told
+# the exact markup to use (via TTSFactory.pause_tag — the one place this
+# session asks the injected TTS factory for that capability, never by vendor
+# name) — on a backend with no such markup (e.g. Azure's V2 text-stream API,
+# which has no SSML support), that instruction is simply omitted from the
+# prompt, so the model never emits markup that backend would misread as words.
+_BEAT_PAUSE_EXAMPLE_SECS = 0.6  # duration used only to show the model the exact syntax
 
 
 def _slide_change_frame(slide_number: int) -> RTVIServerMessageFrame:
@@ -502,12 +514,20 @@ class VoiceSessionRunner:
                     required=[],
                 )
             )
+        # The exact markup this TTS backend renders as a spoken pause, or None if
+        # it has none — the one place this session asks the injected TTS
+        # factory for that capability, never by vendor name. build_system_prompt
+        # only teaches the model to use it when it's real markup this backend
+        # will actually honor.
+        pause_tag_example = self._tts.pause_tag(_BEAT_PAUSE_EXAMPLE_SECS)
         context = LLMContext(
             messages=[
                 {
                     "role": "system",
                     "content": build_system_prompt(
-                        deck, always_show_slide_image=self._always_show_slide_image
+                        deck,
+                        always_show_slide_image=self._always_show_slide_image,
+                        pause_tag_example=pause_tag_example,
                     ),
                 }
             ],
