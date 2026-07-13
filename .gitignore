@@ -2,7 +2,6 @@
 server/.venv/
 __pycache__/
 *.pyc
-.env
 
 # Node
 web/node_modules/
@@ -13,3 +12,5 @@ web/.vite/
 .DS_Store
 
 # server/data/*
+config.bat
+node_modules

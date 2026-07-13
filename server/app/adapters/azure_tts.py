@@ -207,3 +207,9 @@ class AzureTTSFactory:
 
     def create(self) -> AzureWordTTSService:
         return AzureWordTTSService(**self._kwargs)
+
+    def pause_tag(self, seconds: float) -> None:
+        # The V2 text-stream API this adapter uses has no SSML support (see the
+        # module docstring), so this backend has no inline pause markup — the
+        # caller must produce the pause itself (injected silence).
+        return None

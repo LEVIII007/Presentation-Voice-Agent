@@ -66,6 +66,11 @@ class CartesiaTTSFactory:
             api_key=self._api_key, voice_id=self._voice_id, model="sonic-2"
         )
 
+    def pause_tag(self, seconds: float) -> str:
+        # Cartesia renders this inline SSML-like tag as an actual synthesized
+        # pause (pipecat's own builtin helper for it — not our own string).
+        return CartesiaTTSService.PAUSE_TAG(seconds)
+
 
 class AzureLLMFactory:
     def __init__(self, *, api_key: str, endpoint: str, deployment: str, api_version: str):

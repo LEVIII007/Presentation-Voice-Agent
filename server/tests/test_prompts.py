@@ -94,6 +94,47 @@ def test_prompt_mentions_multi_slide_answers_and_handbacks():
     print("ok: prompt allows multi-slide answers and requires hand-backs")
 
 
+def test_prompt_requires_direct_conversational_answers():
+    prompt = build_system_prompt(_deck())
+    assert "Answer the PERSON, not just the content." in prompt
+    assert 'Use "you" and "your" naturally' in prompt
+    assert "talking with them in real time" in prompt
+    print("ok: prompt requires direct conversational answers")
+
+
+def test_prompt_without_pause_tag_has_no_pause_instruction():
+    # No TTS backend capability given -> no pause-tag guidance, no exception
+    # carved out of the "no special characters" voice rule, and no dangling
+    # markup lingers, just the plain idea-group pacing guidance.
+    prompt = build_system_prompt(_deck())
+    assert "few short idea-groups" in prompt
+    assert "natural stopping point on a completed thought" in prompt
+    assert "<break" not in prompt
+    assert "The one exception is the pause tag" not in prompt
+    print("ok: prompt omits pause-tag guidance when the backend has no such capability")
+
+
+def test_prompt_with_pause_tag_teaches_the_exact_markup():
+    prompt = build_system_prompt(_deck(), pause_tag_example='<break time="0.6s" />')
+    # The model is taught to emit the backend's own exact tag syntax.
+    assert '<break time="0.6s" />' in prompt
+    assert "your voice engine renders it as a real spoken pause" in prompt
+    assert "Omit it and there is no pause" in prompt
+    # The tag is the sanctioned exception to the "no special characters" rule.
+    assert "The one exception is the pause tag described above" in prompt
+    print("ok: prompt teaches the model the exact native pause tag when available")
+
+
+def test_prompt_has_eye_guidance_and_acknowledgment_rules():
+    prompt = build_system_prompt(_deck())
+    # Guide their eyes, grounded only in what the slide actually shows.
+    assert "Guide the audience's eyes" in prompt
+    assert "the notes or the slide actually contain" in prompt
+    # A bare acknowledgment is not a question.
+    assert "Not every interjection is a question" in prompt
+    print("ok: prompt has eye-guidance and acknowledgment rules")
+
+
 def test_advance_cue_can_mark_return_from_detour():
     cue = build_advance_cue(3, returning_from_detour=True)
     assert "returning to the main flow" in cue
@@ -115,6 +156,10 @@ if __name__ == "__main__":
     test_prompt_wraps_major_sections_in_xml_tags()
     test_prompt_wraps_each_slide_in_a_tagged_block()
     test_prompt_mentions_multi_slide_answers_and_handbacks()
+    test_prompt_requires_direct_conversational_answers()
+    test_prompt_without_pause_tag_has_no_pause_instruction()
+    test_prompt_with_pause_tag_teaches_the_exact_markup()
+    test_prompt_has_eye_guidance_and_acknowledgment_rules()
     test_advance_cue_can_mark_return_from_detour()
     test_finish_cue_can_mark_return_from_detour()
     print("\nAll prompt tests passed.")

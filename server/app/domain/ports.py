@@ -122,6 +122,12 @@ class STTFactory(Protocol):
 class TTSFactory(Protocol):
     def create(self) -> Any: ...  # a pipecat TTS service
 
+    def pause_tag(self, seconds: float) -> str | None:
+        """Inline markup this backend's TTS engine renders as a spoken pause of
+        the given length, or None if it has no such capability (the caller must
+        then produce the pause itself, e.g. injected silence)."""
+        ...
+
 
 class LLMFactory(Protocol):
     def create(self) -> Any: ...  # a pipecat LLM service

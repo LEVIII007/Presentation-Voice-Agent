@@ -36,6 +36,8 @@ const ICONS = {
   pause: "<svg viewBox='0 0 24 24'><path d='M8 6h3v12H8z' fill='currentColor' stroke='none'/><path d='M13 6h3v12h-3z' fill='currentColor' stroke='none'/></svg>",
   play: "<svg viewBox='0 0 24 24'><path d='M9 7v10l8-5z' fill='currentColor' stroke='none'/></svg>",
   stop: "<svg viewBox='0 0 24 24'><rect x='7' y='7' width='10' height='10' rx='2' fill='currentColor' stroke='none'/></svg>",
+  fullscreen: "<svg viewBox='0 0 24 24'><path d='M8 4H4v4'/><path d='M16 4h4v4'/><path d='M20 16v4h-4'/><path d='M4 16v4h4'/><path d='M9 4 4 9'/><path d='m15 4 5 5'/><path d='m20 15-5 5'/><path d='m4 15 5 5'/></svg>",
+  fullscreenExit: "<svg viewBox='0 0 24 24'><path d='M10 4H4v6'/><path d='M14 4h6v6'/><path d='M20 14v6h-6'/><path d='M4 14v6h6'/><path d='m4 10 6-6'/><path d='m20 10-6-6'/><path d='m20 14-6 6'/><path d='m4 14 6 6'/></svg>",
 };
 
 function iconEl(name) {
@@ -132,6 +134,8 @@ export async function renderViewer(deckId) {
   let latestCaption = "Press Start and allow the microphone to begin, then just speak to interrupt or ask a question.";
   let presentationPaused = false;
   let flowBusy = false;
+  let slideFocusMode = false;
+  let restoreQaAfterFocus = false;
   let session = null;
   let cleanup = () => {};
   let statusState = "offline";
@@ -149,6 +153,15 @@ export async function renderViewer(deckId) {
   const breadcrumb = h("div", { class: "nav-breadcrumb" }, "");
   const prevBtn = h("button", { class: "stage-nav prev", title: "Previous slide", onClick: () => go(current - 1, true) }, "‹");
   const nextBtn = h("button", { class: "stage-nav next", title: "Next slide", onClick: () => go(current + 1, true) }, "›");
+  const focusStageIcon = iconEl("fullscreenExit");
+  const focusStageBtn = h("button", {
+    class: "stage-focus-toggle",
+    type: "button",
+    title: "Exit slide focus",
+    "aria-label": "Exit slide focus",
+    onClick: () => toggleSlideFocus(false),
+  }, focusStageIcon);
+  focusStageBtn.hidden = true;
   const flowIcon = iconEl("pause");
   const flowName = controlNameEl("Pause");
   const stageFlowBtn = h("button", {
@@ -159,7 +172,7 @@ export async function renderViewer(deckId) {
     onClick: togglePresentationFlow,
   }, flowIcon, flowName);
   stageFlowBtn.hidden = true;
-  const stage = h("div", { class: "stage" }, h("div", { class: "stage-aura", "aria-hidden": "true" }), prevBtn, breadcrumb, stageInner, nextBtn);
+  const stage = h("div", { class: "stage" }, h("div", { class: "stage-aura", "aria-hidden": "true" }), prevBtn, breadcrumb, stageInner, nextBtn, focusStageBtn);
 
   const statusText = h("span", { id: "st-text", class: "status-label" }, STATUS_BADGE.offline);
   const statusPill = h("div", {
@@ -195,7 +208,16 @@ export async function renderViewer(deckId) {
     "aria-label": "Turn captions off",
     onClick: toggleCaptions,
   }, capIcon, capName);
-  const controls = h("div", { class: "control-panel" }, capToggle, stageFlowBtn, startBtn, statusPill);
+  const fullscreenIcon = iconEl("fullscreen");
+  const fullscreenName = controlNameEl("Expand");
+  const fullscreenBtn = h("button", {
+    class: "session-icon-btn fullscreen-toggle",
+    type: "button",
+    title: "Show slide full screen",
+    "aria-label": "Show slide full screen",
+    onClick: () => toggleSlideFocus(),
+  }, fullscreenIcon, fullscreenName);
+  const controls = h("div", { class: "control-panel" }, capToggle, stageFlowBtn, startBtn, fullscreenBtn, statusPill);
   const hint = h("div", { class: "hint" }, "Tip: just start talking to interrupt the presenter. Use headphones to avoid echo.");
   const dock = h("div", { class: "dock" },
     h(
@@ -239,6 +261,34 @@ export async function renderViewer(deckId) {
     dataset: { surface: "viewer", subtitle: deck.title || "Live presentation", chrome: "none" },
   }, rail, stage, qaPanel, dock, qaBackdrop, qaFab, mobileHome);
   mount(viewer);
+
+  function syncSlideFocusControl() {
+    viewer.classList.toggle("slide-focus", slideFocusMode);
+    fullscreenBtn.classList.toggle("active", slideFocusMode);
+    fullscreenBtn.title = slideFocusMode ? "Exit slide focus" : "Show slide full screen";
+    fullscreenBtn.setAttribute("aria-label", fullscreenBtn.title);
+    fullscreenIcon.innerHTML = slideFocusMode ? ICONS.fullscreenExit : ICONS.fullscreen;
+    fullscreenName.textContent = slideFocusMode ? "Exit" : "Focus";
+    focusStageBtn.hidden = !slideFocusMode;
+  }
+
+  function toggleSlideFocus(force) {
+    const next = typeof force === "boolean" ? force : !slideFocusMode;
+    if (next === slideFocusMode) return;
+    slideFocusMode = next;
+    if (slideFocusMode) {
+      restoreQaAfterFocus = viewer.classList.contains("qa-open");
+      closeQa();
+    } else if (restoreQaAfterFocus && !window.matchMedia("(max-width: 720px)").matches) {
+      openQa();
+      restoreQaAfterFocus = false;
+    } else {
+      restoreQaAfterFocus = false;
+    }
+    syncSlideFocusControl();
+  }
+
+  syncSlideFocusControl();
 
   // --- Rail ---
   slides.forEach((s) => {
@@ -524,7 +574,10 @@ export async function renderViewer(deckId) {
   // --- Keyboard nav ---
   function onKey(e) {
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-    if (e.key === "ArrowLeft") go(current - 1, true);
+    if (e.key === "Escape" && slideFocusMode) {
+      e.preventDefault();
+      toggleSlideFocus(false);
+    } else if (e.key === "ArrowLeft") go(current - 1, true);
     else if (e.key === "ArrowRight") go(current + 1, true);
   }
   window.addEventListener("keydown", onKey);

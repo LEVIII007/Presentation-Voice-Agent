@@ -1557,6 +1557,29 @@ textarea {
   right: 12px;
 }
 
+.stage-focus-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 999px;
+  background: rgba(10, 13, 21, 0.84);
+  color: var(--viewer-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+}
+
+.stage-focus-toggle:hover {
+  border-color: var(--viewer-line-strong);
+}
+
 .dock {
   grid-column: 2;
   border-top: 1px solid rgba(172, 188, 228, 0.08);
@@ -1784,6 +1807,14 @@ textarea {
 
 .session-icon-btn.paused .control-icon {
   color: #ffe081;
+}
+
+.fullscreen-toggle.active {
+  color: #d9e8ff;
+}
+
+.fullscreen-toggle.active .control-icon {
+  color: #b9d3ff;
 }
 
 .toggle-cap.active .control-icon {
@@ -2106,6 +2137,46 @@ textarea {
 
 .viewer.qa-open {
   grid-template-columns: 114px minmax(0, 1fr) minmax(0, 340px);
+}
+
+.viewer.slide-focus {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  background:
+    radial-gradient(1000px 620px at 76% -12%, rgba(103, 131, 255, 0.18), transparent 58%),
+    radial-gradient(760px 520px at 30% 110%, rgba(239, 160, 194, 0.14), transparent 60%),
+    linear-gradient(180deg, var(--viewer-bg), var(--viewer-bg-2) 50%, #090c12 100%);
+}
+
+.viewer.slide-focus .rail,
+.viewer.slide-focus .dock,
+.viewer.slide-focus .qa-panel,
+.viewer.slide-focus .qa-backdrop,
+.viewer.slide-focus .qa-fab,
+.viewer.slide-focus .viewer-home-mobile {
+  display: none !important;
+}
+
+.viewer.slide-focus .stage {
+  grid-column: 1;
+  grid-row: 1;
+  padding: 18px 24px;
+}
+
+.viewer.slide-focus .stage-inner {
+  padding: 0;
+}
+
+.viewer.slide-focus .stage-nav {
+  display: flex;
+}
+
+.viewer.slide-focus .slide-card {
+  min-height: 100%;
+}
+
+.viewer.slide-focus .slide-card img {
+  border-radius: 14px;
 }
 
 @media (max-width: 1180px) {
@@ -2552,6 +2623,19 @@ textarea {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) auto;
     border-radius: 0;
+  }
+
+  .viewer.slide-focus .stage {
+    padding: 14px 14px 18px;
+  }
+
+  .viewer.slide-focus .stage-nav {
+    display: flex;
+  }
+
+  .viewer.slide-focus .stage-focus-toggle {
+    top: 12px;
+    right: 12px;
   }
 
   .rail {
