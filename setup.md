@@ -29,8 +29,10 @@
 ## Docker run
 
 1. Fill `server/.env`.
-2. Run `docker compose up --build`.
+2. Run `./start-docker.sh`.
 3. Open `http://localhost:5173`.
+
+If you want a different host port, run `VOICE_SLIDES_PORT=55173 ./start-docker.sh`.
 
 ## Data
 

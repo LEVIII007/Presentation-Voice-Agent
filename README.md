@@ -40,6 +40,7 @@ Turn a PDF or PPTX into a voice-presentable deck.
 - `PPTX` upload needs LibreOffice.
 - `PDF` upload works without LibreOffice.
 - Docker serves frontend and backend from one container.
+- `./start-docker.sh` is the one-command Docker launcher and works with both `docker compose` and `docker-compose`.
 
 ## Docs
 

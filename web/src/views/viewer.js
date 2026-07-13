@@ -18,6 +18,19 @@ const STATUS_TEXT = {
   error: "Error",
 };
 
+const STATUS_BADGE = {
+  connecting: "Connecting",
+  connected: "Ready",
+  paused: "Paused",
+  speaking: "Presenter",
+  listening: "You",
+  thinking: "Thinking",
+  offline: "Offline",
+  error: "Error",
+};
+
+const STATUS_WAVE_BARS = [0.24, 0.36, 0.54, 0.74, 0.92, 1, 0.86, 0.64, 0.42, 0.22, 0.18, 0.26, 0.44, 0.66, 0.88, 1, 0.9, 0.72, 0.52];
+
 const ICONS = {
   captions: "<svg viewBox='0 0 24 24'><path d='M11 6 7.5 9H5v6h2.5L11 18z'/><path d='M14.5 8.5a4.5 4.5 0 0 1 0 7'/><path d='M16.5 6a8 8 0 0 1 0 12'/></svg>",
   pause: "<svg viewBox='0 0 24 24'><path d='M8 6h3v12H8z' fill='currentColor' stroke='none'/><path d='M13 6h3v12h-3z' fill='currentColor' stroke='none'/></svg>",
@@ -31,6 +44,17 @@ function iconEl(name) {
 
 function controlNameEl(label) {
   return h("span", { class: "control-name" }, label);
+}
+
+function statusWaveEl() {
+  return h(
+    "div",
+    { class: "status-wave", "aria-hidden": "true" },
+    STATUS_WAVE_BARS.map((amp, index) => h("span", {
+      class: "status-wave-bar",
+      style: `--bar:${amp};--i:${index};`,
+    })),
+  );
 }
 
 const NO_SPACE_BEFORE_SEGMENT_RE = /^[,.;:!?%)\]}]/;
@@ -137,9 +161,18 @@ export async function renderViewer(deckId) {
   stageFlowBtn.hidden = true;
   const stage = h("div", { class: "stage" }, h("div", { class: "stage-aura", "aria-hidden": "true" }), prevBtn, breadcrumb, stageInner, nextBtn);
 
-  const statusPill = h("div", { class: "control-status offline" },
+  const statusText = h("span", { id: "st-text", class: "status-label" }, STATUS_BADGE.offline);
+  const statusPill = h("div", {
+    class: "control-status offline",
+    role: "status",
+    "aria-live": "polite",
+    "aria-label": STATUS_TEXT.offline,
+    title: STATUS_TEXT.offline,
+  },
+  statusWaveEl(),
+  h("div", { class: "status-copy" },
     h("span", { class: "status-indicator-dot", "aria-hidden": "true" }),
-    h("span", { id: "st-text", class: "status-label" }, "Offline"));
+    statusText));
   const caption = h("div", { class: "caption" }, renderCaptionContent(latestCaption));
   const metaDeck = h("div", { class: "viewer-meta-title" }, deck.title || "Presentation");
   const metaCount = h("div", { class: "viewer-meta-count" }, `1 / ${total}`);
@@ -308,8 +341,10 @@ export async function renderViewer(deckId) {
       state = "paused";
       text = STATUS_TEXT.paused;
     }
-    statusPill.className = `control-status ${state}${["speaking", "listening", "thinking", "connected"].includes(state) ? " live" : ""}`;
-    document.getElementById("st-text").textContent = text;
+    statusPill.className = `control-status ${state}${["connecting", "speaking", "listening", "thinking", "connected"].includes(state) ? " live" : ""}`;
+    statusPill.setAttribute("aria-label", text);
+    statusPill.title = text;
+    statusText.textContent = STATUS_BADGE[state] || text;
   }
 
   function setStatus(state, text) {
